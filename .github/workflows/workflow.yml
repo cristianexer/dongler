@@ -1,0 +1,265 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test-rust:
+    name: Test Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --locked
+
+  test-python:
+    name: Test Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --dev --locked
+      - run: uv run maturin develop
+      - run: uv run pytest
+
+  test-node:
+    name: Test Node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: node/package-lock.json
+      - run: npm ci
+        working-directory: node
+      - run: npm test
+        working-directory: node
+
+  private-corpus:
+    name: Test Private Corpus
+    runs-on: ubuntu-latest
+    env:
+      DONGLER_CORPUS_URL: ${{ secrets.DONGLER_CORPUS_URL }}
+      DONGLER_CORPUS_SHA256: ${{ secrets.DONGLER_CORPUS_SHA256 }}
+      DONGLER_CORPUS_AUTH_HEADER: ${{ secrets.DONGLER_CORPUS_AUTH_HEADER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require private corpus secrets
+        run: |
+          set -euo pipefail
+          if [ -z "$DONGLER_CORPUS_URL" ] || [ -z "$DONGLER_CORPUS_SHA256" ]; then
+            echo "::error::Set DONGLER_CORPUS_URL and DONGLER_CORPUS_SHA256 repository secrets before publishing."
+            exit 1
+          fi
+      - name: Build CLI
+        run: cargo build --release -p dongler --locked
+      - name: Download private corpus
+        run: |
+          set -euo pipefail
+          corpus_archive="$RUNNER_TEMP/dongler-private-corpus.tar.gz"
+          corpus_dir="$RUNNER_TEMP/dongler-private-corpus"
+          if [ -n "$DONGLER_CORPUS_AUTH_HEADER" ]; then
+            curl --fail --location --silent --show-error \
+              --header "$DONGLER_CORPUS_AUTH_HEADER" \
+              "$DONGLER_CORPUS_URL" \
+              --output "$corpus_archive"
+          else
+            curl --fail --location --silent --show-error \
+              "$DONGLER_CORPUS_URL" \
+              --output "$corpus_archive"
+          fi
+          echo "$DONGLER_CORPUS_SHA256  $corpus_archive" | sha256sum --check -
+          mkdir -p "$corpus_dir"
+          tar -xzf "$corpus_archive" -C "$corpus_dir"
+          echo "DONGLER_PRIVATE_CORPUS_DIR=$corpus_dir" >> "$GITHUB_ENV"
+      - name: Run private corpus smoke tests
+        run: scripts/private-corpus-smoke.sh "$DONGLER_PRIVATE_CORPUS_DIR"
+
+  package-artifacts:
+    name: Build Package Artifacts
+    runs-on: ubuntu-latest
+    needs: [test-rust, test-python, test-node, private-corpus]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: node/package-lock.json
+      - name: Build Python distributions
+        run: |
+          set -euo pipefail
+          mkdir -p dist/python
+          uv build --out-dir dist/python
+      - name: Package Rust core crate
+        run: |
+          set -euo pipefail
+          mkdir -p dist/crates
+          cargo package -p dongler-core --locked
+          cp target/package/dongler-core-*.crate dist/crates/
+      - name: Package npm tarball
+        run: |
+          set -euo pipefail
+          npm ci
+          mkdir -p ../dist/npm
+          npm pack --pack-destination ../dist/npm
+        working-directory: node
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  build-cli-binaries:
+    name: Build CLI Binary (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    needs: [test-rust, test-python, test-node, private-corpus]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: linux-x64
+            archive: tar
+            binary: dongler
+          - os: macos-latest
+            asset: macos-latest
+            archive: tar
+            binary: dongler
+          - os: windows-latest
+            asset: windows-x64
+            archive: zip
+            binary: dongler.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p dongler --locked
+      - name: Package Unix binary
+        if: matrix.archive == 'tar'
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin
+          cp "target/release/${{ matrix.binary }}" "dist/bin/dongler-${{ matrix.asset }}"
+          tar -czf "dist/bin/dongler-${{ matrix.asset }}.tar.gz" -C dist/bin "dongler-${{ matrix.asset }}"
+      - name: Package Windows binary
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/bin
+          Copy-Item "target/release/${{ matrix.binary }}" "dist/bin/dongler-${{ matrix.asset }}.exe"
+          Compress-Archive -Path "dist/bin/dongler-${{ matrix.asset }}.exe" -DestinationPath "dist/bin/dongler-${{ matrix.asset }}.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.asset }}
+          path: dist/bin/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-crates:
+    name: Publish crates.io
+    runs-on: ubuntu-latest
+    needs: [package-artifacts]
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish Rust crates
+        run: |
+          set -euo pipefail
+          cargo publish -p dongler-core --locked
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if cargo publish -p dongler --locked; then
+              exit 0
+            fi
+            echo "dongler-core is not visible in the crates.io index yet; retry $attempt/12"
+            sleep 20
+          done
+          cargo publish -p dongler --locked
+
+  publish-pypi:
+    name: Publish PyPI
+    runs-on: ubuntu-latest
+    needs: [package-artifacts]
+    permissions:
+      contents: read
+      id-token: write
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: release-packages
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: release-packages/python
+
+  publish-npm:
+    name: Publish npm
+    runs-on: ubuntu-latest
+    needs: [package-artifacts]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: release-packages
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Publish npm tarball
+        run: npm publish release-packages/npm/dongler-*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    name: Publish GitHub Release Assets
+    runs-on: ubuntu-latest
+    needs: [publish-crates, publish-pypi, publish-npm, build-cli-binaries]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Package crates for GitHub release
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/crates
+          cargo package -p dongler-core --locked
+          cargo package -p dongler --locked --no-verify
+          cp target/package/dongler-core-*.crate release-assets/crates/
+          cp target/package/dongler-*.crate release-assets/crates/
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/dongler-core/Cargo.toml | head -n1)"
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --target "$GITHUB_SHA" --title "Dongler $tag"
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "Dongler $tag" --notes "Automated Dongler release for $tag."
+          fi
+          find release-assets -type f -print0 | xargs -0 -I{} gh release upload "$tag" "{}" --clobber

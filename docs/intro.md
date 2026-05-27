@@ -15,7 +15,7 @@ markdown = doc.to_markdown()
 latex = doc.to_latex()
 ```
 
-PDF extraction is the product focus. Dongler `0.1.0` ships a native Rust PDF
+PDF extraction is the product focus. Dongler `0.2.0` ships a native Rust PDF
 path alongside `.txt` extraction, object APIs, batch APIs, and renderers.
 
 ## What Works Today

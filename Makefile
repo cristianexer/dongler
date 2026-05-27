@@ -45,7 +45,7 @@ eval-smoke:
 
 publish-dry-run:
 	cargo publish --dry-run --allow-dirty -p dongler-core
-	@echo "Run cargo publish --dry-run -p dongler after dongler-core 0.1.0 exists on crates.io."
+	@echo "Run cargo publish --dry-run -p dongler after dongler-core 0.2.0 exists on crates.io."
 	uv build
 	uv run maturin build
 	@echo "maturin does not currently support publish --dry-run; use the build artifacts above or TestPyPI for upload validation."

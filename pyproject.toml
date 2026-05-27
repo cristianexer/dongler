@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dongler"
-version = "0.1.0"
+version = "0.2.0"
 description = "Created by Daniel Fat. Python bindings for a Rust-native document extraction engine focused on Markdown and LaTeX output."
 readme = "README.md"
 requires-python = ">=3.9"

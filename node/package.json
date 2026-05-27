@@ -1,5 +1,5 @@
 {
-  "name": "dongler",
+  "name": "@cristianexer/dongler",
   "version": "0.1.0",
   "description": "Created by Daniel Fat. TypeScript bindings for a Rust-native document extraction engine focused on Markdown and LaTeX output.",
   "author": "Daniel Fat",

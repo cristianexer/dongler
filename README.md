@@ -35,7 +35,7 @@ Current outputs:
 ```bash
 cargo install dongler
 pip install dongler
-npm install dongler
+npm install @cristianexer/dongler
 ```
 
 For Rust library usage, depend on `dongler-core`. The public `dongler` crate is
@@ -59,7 +59,7 @@ latex = doc.to_latex()
 TypeScript:
 
 ```ts
-import { load } from "dongler";
+import { load } from "@cristianexer/dongler";
 
 const doc = load("invoice.pdf");
 const markdown = doc.toMarkdown();
@@ -96,7 +96,7 @@ print(doc.to_latex())
 TypeScript:
 
 ```ts
-import { load } from "dongler";
+import { load } from "@cristianexer/dongler";
 
 const doc = load("notes.txt");
 console.log(doc.metadata.block_count);
@@ -137,7 +137,7 @@ for result in dongler.load_many(["notes.txt", "invoice.pdf"]):
 TypeScript:
 
 ```ts
-import { loadMany } from "dongler";
+import { loadMany } from "@cristianexer/dongler";
 
 for (const result of loadMany(["notes.txt", "invoice.pdf"])) {
   if (result.ok) {

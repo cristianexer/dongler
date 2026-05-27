@@ -17,7 +17,7 @@ error.
 ## Install
 
 ```bash
-npm install dongler
+npm install @cristianexer/dongler
 ```
 
 ## Planned PDF Workflow
@@ -25,7 +25,7 @@ npm install dongler
 The API is already shaped for PDF extraction:
 
 ```ts
-import { load } from "dongler";
+import { load } from "@cristianexer/dongler";
 
 const doc = load("invoice.pdf");
 const markdown = doc.toMarkdown();
@@ -38,7 +38,7 @@ Until the PDF engine lands, loading a PDF throws an error such as
 ## Works Today
 
 ```ts
-import { load } from "dongler";
+import { load } from "@cristianexer/dongler";
 
 const doc = load("notes.txt");
 
@@ -51,7 +51,7 @@ console.log(doc.toJson());
 ## Batch Processing
 
 ```ts
-import { loadMany } from "dongler";
+import { loadMany } from "@cristianexer/dongler";
 
 const results = loadMany(["notes.txt", "invoice.pdf"]);
 
@@ -69,7 +69,7 @@ for (const result of results) {
 The original text helpers remain available:
 
 ```ts
-import { parseText, toLatex, toMarkdown } from "dongler";
+import { parseText, toLatex, toMarkdown } from "@cristianexer/dongler";
 
 const doc = parseText("Hello from Dongler");
 const markdown = toMarkdown("Hello from Dongler");

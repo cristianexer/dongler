@@ -22,7 +22,7 @@ for result in dongler.load_many(["notes.txt", "invoice.pdf"]):
 ## TypeScript
 
 ```ts
-import { loadMany } from "dongler";
+import { loadMany } from "@cristianexer/dongler";
 
 for (const result of loadMany(["notes.txt", "invoice.pdf"])) {
   if (result.ok) {

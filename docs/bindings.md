@@ -27,7 +27,7 @@ doc.to_dict()
 ## TypeScript Objects
 
 ```ts
-import { load } from "dongler";
+import { load } from "@cristianexer/dongler";
 
 const doc = load("notes.txt");
 

@@ -9,7 +9,7 @@ Install the package for the ecosystem you use:
 ```bash
 cargo install dongler
 pip install dongler
-npm install dongler
+npm install @cristianexer/dongler
 ```
 
 For Rust library usage, depend on `dongler-core`. The `dongler` crate is the CLI
@@ -30,7 +30,7 @@ print(doc.to_latex())
 ## TypeScript
 
 ```ts
-import { load } from "dongler";
+import { load } from "@cristianexer/dongler";
 
 const doc = load("notes.txt");
 

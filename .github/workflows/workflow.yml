@@ -229,15 +229,53 @@ jobs:
       - name: Publish Rust crates
         run: |
           set -euo pipefail
-          cargo publish -p dongler-core --locked
+
+          crate_version() {
+            sed -n 's/^version = "\(.*\)"/\1/p' "$1" | head -n1
+          }
+
+          publish_crate() {
+            local package="$1"
+            local crate="$2"
+            local manifest="$3"
+            local version
+            local status
+            local output
+            version="$(crate_version "$manifest")"
+            status="$(curl --silent --user-agent "dongler-release-ci" --output /dev/null --write-out "%{http_code}" "https://crates.io/api/v1/crates/$crate/$version" || true)"
+
+            if [ "$status" = "200" ]; then
+              echo "::notice::$crate $version is already published; skipping."
+              return 0
+            fi
+
+            if [ "$status" != "404" ]; then
+              echo "::warning::Could not confirm whether $crate $version exists on crates.io (HTTP $status); attempting publish."
+            fi
+
+            if output="$(cargo publish -p "$package" --locked 2>&1)"; then
+              printf '%s\n' "$output"
+              return 0
+            fi
+
+            printf '%s\n' "$output"
+            if printf '%s\n' "$output" | grep -Eiq 'already (uploaded|exists)|previously published'; then
+              echo "::notice::$crate $version is already published; skipping."
+              return 0
+            fi
+
+            return 1
+          }
+
+          publish_crate dongler-core dongler-core crates/dongler-core/Cargo.toml
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if cargo publish -p dongler --locked; then
+            if publish_crate dongler dongler crates/dongler-cli/Cargo.toml; then
               exit 0
             fi
             echo "dongler-core is not visible in the crates.io index yet; retry $attempt/12"
             sleep 20
           done
-          cargo publish -p dongler --locked
+          publish_crate dongler dongler crates/dongler-cli/Cargo.toml
 
   publish-pypi:
     name: Publish PyPI
@@ -256,6 +294,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: release-packages/python
+          skip-existing: true
 
   publish-npm:
     name: Publish npm
@@ -266,6 +305,7 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: release-packages
@@ -274,8 +314,22 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Check npm package version
+        id: npm-version
+        run: |
+          set -euo pipefail
+          package_spec="$(node -p "const p = require('./node/package.json'); p.name + '@' + p.version")"
+          echo "package_spec=$package_spec" >> "$GITHUB_OUTPUT"
+
+          if npm view "$package_spec" version >/dev/null 2>&1; then
+            echo "::notice::$package_spec is already published; skipping npm publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish npm tarball
-        run: npm publish release-packages/npm/dongler-*.tgz --access public
+        if: steps.npm-version.outputs.publish == 'true'
+        run: npm publish release-packages/npm/*.tgz --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

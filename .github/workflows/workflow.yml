@@ -143,6 +143,14 @@ jobs:
           maturin-version: v1.8.7
           manylinux: "2014"
           args: --release --locked --sdist --out dist/python --interpreter python3.9
+      - name: Restore workspace ownership after manylinux build
+        run: |
+          set -euo pipefail
+          for path in dist target; do
+            if [ -e "$path" ]; then
+              sudo chown -R "$(id -u):$(id -g)" "$path"
+            fi
+          done
       - name: Package Rust core crate
         run: |
           set -euo pipefail

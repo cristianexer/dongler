@@ -8,11 +8,6 @@ const sidebars = {
     "api",
     "bindings",
     "cli",
-    {
-      type: "category",
-      label: "Architecture",
-      items: ["architecture", "pdf-roadmap"],
-    },
   ],
 };
 

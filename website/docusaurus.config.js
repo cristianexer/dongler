@@ -4,7 +4,7 @@ const darkCodeTheme = require("prism-react-renderer").themes.dracula;
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: "Dongler",
-  tagline: "Structure from messy documents",
+  tagline: "Clean structure from messy documents",
   favicon: "img/dongler-logo.png",
 
   url: "https://cristianexer.github.io",
@@ -45,6 +45,10 @@ const config = {
 
   themeConfig: {
     image: "img/dongler-social-card.svg",
+    colorMode: {
+      defaultMode: "light",
+      respectPrefersColorScheme: true,
+    },
     navbar: {
       title: "Dongler",
       logo: {
@@ -53,7 +57,7 @@ const config = {
       },
       items: [
         { to: "/docs/intro", label: "Docs", position: "left" },
-        { to: "/docs/pdf-workflow", label: "PDF Workflow", position: "left" },
+        { to: "/docs/quickstart", label: "Quick start", position: "left" },
         {
           href: "https://github.com/cristianexer/dongler",
           label: "GitHub",
@@ -70,7 +74,6 @@ const config = {
             { label: "Introduction", to: "/docs/intro" },
             { label: "Quick Start", to: "/docs/quickstart" },
             { label: "PDF Workflow", to: "/docs/pdf-workflow" },
-            { label: "Architecture", to: "/docs/architecture" },
           ],
         },
         {

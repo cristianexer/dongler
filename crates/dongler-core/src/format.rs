@@ -58,8 +58,8 @@ impl InputFormat {
 
     pub fn extraction_status(self) -> ExtractionStatus {
         match self {
-            Self::Text => ExtractionStatus::Supported,
-            Self::Pdf | Self::Excel | Self::Word | Self::Html | Self::Image | Self::Email => {
+            Self::Text | Self::Pdf => ExtractionStatus::Supported,
+            Self::Excel | Self::Word | Self::Html | Self::Image | Self::Email => {
                 ExtractionStatus::Planned
             }
         }

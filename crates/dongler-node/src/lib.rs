@@ -12,6 +12,15 @@ fn parse_document(document_json: &str) -> napi::Result<dongler_core::Document> {
     serde_json::from_str(document_json).map_err(map_runtime_error)
 }
 
+fn parse_options(options_json: Option<String>) -> napi::Result<dongler_core::ExtractOptions> {
+    options_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(map_runtime_error)
+        .map(|options| options.unwrap_or_default())
+}
+
 #[napi(js_name = "version")]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
@@ -45,6 +54,17 @@ pub fn detect_format(path: String) -> napi::Result<String> {
 #[napi(js_name = "loadPathJson")]
 pub fn load_path_json(path: String) -> napi::Result<String> {
     dongler_core::load_path(path)
+        .and_then(|document| document.to_json())
+        .map_err(map_error)
+}
+
+#[napi(js_name = "loadPathJsonWithOptions")]
+pub fn load_path_json_with_options(
+    path: String,
+    options_json: Option<String>,
+) -> napi::Result<String> {
+    let options = parse_options(options_json)?;
+    dongler_core::load_path_with_options(path, options)
         .and_then(|document| document.to_json())
         .map_err(map_error)
 }

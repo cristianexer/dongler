@@ -1,10 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use dongler_core::{
-    to_json, to_latex, to_markdown, DonglerError, ExtractionStatus, InputFormat, Result,
-    SourceLoader, TextSourceLoader,
-};
+use dongler_core::{load_path, ExtractionStatus, InputFormat, Result};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -67,16 +64,11 @@ fn inspect(path: &Path) -> Result<()> {
 }
 
 fn extract(path: &Path, output_format: OutputFormat) -> Result<()> {
-    let format = InputFormat::detect_path(path)?;
-    if format.extraction_status() != ExtractionStatus::Supported {
-        return Err(DonglerError::planned_format(format.as_str()));
-    }
-
-    let source = TextSourceLoader.load(path)?;
+    let document = load_path(path)?;
     let output = match output_format {
-        OutputFormat::Markdown => to_markdown(&source.content)?,
-        OutputFormat::Json => to_json(&source.content)?,
-        OutputFormat::Latex => to_latex(&source.content)?,
+        OutputFormat::Markdown => document.to_markdown()?,
+        OutputFormat::Json => document.to_json()?,
+        OutputFormat::Latex => document.to_latex()?,
     };
 
     println!("{output}");

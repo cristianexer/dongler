@@ -13,14 +13,14 @@ Created by Daniel Fat.
 
 ## Status
 
-Dongler `0.1.0` ships the stable package shape and a real `.txt` extraction
-path. PDF is the primary product target and the public API is designed for that
-workflow, but PDF extraction is not implemented yet.
+Dongler `0.1.0` ships the stable package shape, `.txt` extraction, and a
+native Rust PDF extraction path with page geometry, text source anchors, basic
+table reconstruction, and image object positions.
 
 | Format | Detection | Extraction |
 | --- | --- | --- |
 | `.txt`, `.text` | yes | supported |
-| `.pdf` | yes | planned |
+| `.pdf` | yes | supported |
 | Word, Excel, HTML, images, email | yes | planned |
 
 Current outputs:
@@ -41,10 +41,9 @@ npm install @cristianexer/dongler
 For Rust library usage, depend on `dongler-core`. The public `dongler` crate is
 the CLI package.
 
-## Planned PDF Workflow
+## PDF Workflow
 
-This is the API Dongler is building toward. Today, the same calls detect PDFs
-and return a clear planned-format error until the PDF engine lands.
+The same object API works for digitally born PDFs.
 
 Python:
 
@@ -173,8 +172,8 @@ dongler extract notes.txt --format latex
 dongler extract notes.txt --format json
 ```
 
-PDF extraction through the CLI will use the same engine as the Rust, Python, and
-TypeScript packages once it is implemented.
+PDF extraction through the CLI uses the same Rust-native engine as the Rust,
+Python, and TypeScript packages.
 
 ## API Surface
 
@@ -214,8 +213,8 @@ flowchart LR
     IR --> CLI["CLI"]
 ```
 
-The current text engine proves the pipeline. The PDF engine will plug into the
-same loader, engine, IR, and renderer boundaries.
+The text and PDF engines share the same loader, engine, IR, and renderer
+boundaries, so every binding sees the same document object shape.
 
 ## Documentation
 

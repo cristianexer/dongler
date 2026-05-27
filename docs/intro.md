@@ -15,17 +15,18 @@ markdown = doc.to_markdown()
 latex = doc.to_latex()
 ```
 
-PDF extraction is the product focus. Dongler `0.1.0` does not extract PDFs yet;
-it ships the package structure, object API, batch API, renderers, and a working
-`.txt` extraction path that the PDF engine will build on.
+PDF extraction is the product focus. Dongler `0.1.0` ships a native Rust PDF
+path alongside `.txt` extraction, object APIs, batch APIs, and renderers.
 
 ## What Works Today
 
-- Load `.txt` and `.text` files by path.
+- Load `.txt`, `.text`, and digitally born `.pdf` files by path.
 - Parse text into Dongler's document IR.
+- Extract PDF text, page geometry, source anchors, image positions, and simple
+  table blocks.
 - Render Markdown, LaTeX, and JSON from a document object.
 - Batch process paths with per-file success and error results.
-- Detect PDFs and other common formats, with clear planned-format errors.
+- Detect other common formats with clear planned-format errors.
 
 ## What Dongler Is Optimized For
 
@@ -33,4 +34,4 @@ it ships the package structure, object API, batch API, renderers, and a working
 - Table extraction into structured table blocks.
 - Clean Markdown and LaTeX output.
 - A Rust core with consistent Python and TypeScript bindings.
-- Honest errors when a file type is detected but not implemented yet.
+- Honest warnings when a PDF structure is detected but only partially modeled.

@@ -14,6 +14,14 @@ fn parse_document(document_json: &str) -> PyResult<dongler_core::Document> {
     serde_json::from_str(document_json).map_err(map_runtime_error)
 }
 
+fn parse_options(options_json: Option<&str>) -> PyResult<dongler_core::ExtractOptions> {
+    options_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(map_runtime_error)
+        .map(|options| options.unwrap_or_default())
+}
+
 #[pyfunction]
 fn to_markdown(text: &str) -> PyResult<String> {
     dongler_core::to_markdown(text).map_err(map_error)
@@ -37,6 +45,14 @@ fn detect_format(path: &str) -> PyResult<String> {
 #[pyfunction]
 fn load_path_json(path: &str) -> PyResult<String> {
     dongler_core::load_path(path)
+        .and_then(|document| document.to_json())
+        .map_err(map_error)
+}
+
+#[pyfunction(signature = (path, options_json=None))]
+fn load_path_json_with_options(path: &str, options_json: Option<&str>) -> PyResult<String> {
+    let options = parse_options(options_json)?;
+    dongler_core::load_path_with_options(path, options)
         .and_then(|document| document.to_json())
         .map_err(map_error)
 }
@@ -71,6 +87,7 @@ fn _dongler(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(to_latex, module)?)?;
     module.add_function(wrap_pyfunction!(detect_format, module)?)?;
     module.add_function(wrap_pyfunction!(load_path_json, module)?)?;
+    module.add_function(wrap_pyfunction!(load_path_json_with_options, module)?)?;
     module.add_function(wrap_pyfunction!(load_many_json, module)?)?;
     module.add_function(wrap_pyfunction!(document_to_markdown, module)?)?;
     module.add_function(wrap_pyfunction!(document_to_json, module)?)?;

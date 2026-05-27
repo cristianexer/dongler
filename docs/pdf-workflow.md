@@ -4,8 +4,9 @@ sidebar_position: 3
 
 # PDF Workflow
 
-Dongler is being built for PDF extraction first: text, tables, layout, and
-metadata rendered to Markdown and LaTeX.
+Dongler includes a Rust-native PDF extraction path for digitally born PDFs:
+text, page geometry, source anchors, basic table structure, image positions, and
+metadata rendered to Markdown, JSON, and LaTeX.
 
 The intended workflow is:
 
@@ -17,29 +18,18 @@ markdown = doc.to_markdown()
 latex = doc.to_latex()
 ```
 
-In `0.1.0`, this API shape exists, but PDF extraction returns:
-
-```text
-pdf extraction is planned but not implemented yet
-```
-
-## Why the API Exists Before the PDF Engine
-
-The stable user workflow should not change when the PDF engine lands. The text
-engine proves the same path:
-
-```python
-doc = dongler.load("notes.txt")
-print(doc.to_markdown())
-```
-
-The PDF engine will plug into the existing format detection, source loading,
-document IR, and renderer boundaries.
-
 ## PDF Output Goals
 
 - Preserve readable page order.
 - Extract text into paragraphs and sections.
-- Convert tables into table blocks.
+- Convert simple positioned tables into table blocks.
 - Carry useful metadata.
+- Preserve block/page bounding boxes for citations.
+- Record image object positions and source anchors.
 - Render clean Markdown and LaTeX from the same document object.
+
+## Native-First Scope
+
+The v1 engine is deterministic and native-first. OCR and VLM/LLM repair are not
+default dependencies; low-confidence or unsupported PDF structures are surfaced
+as warnings and can be evaluated separately.

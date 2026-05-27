@@ -41,9 +41,12 @@ def parse_text(text: str) -> dict[str, Any]:
 PathLike = Union[str, os.PathLike[str]]
 
 
-def load(path: PathLike) -> DonglerDocument:
+def load(path: PathLike, options: dict[str, Any] | None = None) -> DonglerDocument:
     path_string = os.fspath(path)
-    return DonglerDocument(json.loads(_dongler.load_path_json(path_string)))
+    options_json = None if options is None else json.dumps(options)
+    return DonglerDocument(
+        json.loads(_dongler.load_path_json_with_options(path_string, options_json))
+    )
 
 
 def load_many(paths: list[PathLike]) -> list[dict[str, Any]]:

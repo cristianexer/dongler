@@ -17,6 +17,11 @@ impl Renderer for MarkdownRenderer {
                 match block {
                     Block::Text(text) => rendered_blocks.push(text.text.clone()),
                     Block::Table(table) => rendered_blocks.push(render_markdown_table(table)),
+                    Block::Figure(figure) => {
+                        if let Some(caption) = &figure.caption {
+                            rendered_blocks.push(caption.clone());
+                        }
+                    }
                 }
             }
         }
@@ -51,6 +56,12 @@ impl Renderer for LatexRenderer {
                     Block::Table(table) => {
                         output.push_str(&render_latex_table(table));
                         output.push_str("\n\n");
+                    }
+                    Block::Figure(figure) => {
+                        if let Some(caption) = &figure.caption {
+                            output.push_str(&escape_latex(caption));
+                            output.push_str("\n\n");
+                        }
                     }
                 }
             }

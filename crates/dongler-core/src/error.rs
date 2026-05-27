@@ -15,6 +15,9 @@ pub enum DonglerError {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("PDF error: {0}")]
+    Pdf(String),
 }
 
 impl DonglerError {
@@ -22,5 +25,9 @@ impl DonglerError {
         Self::PlannedFormat {
             format: format.into(),
         }
+    }
+
+    pub fn pdf(message: impl Into<String>) -> Self {
+        Self::Pdf(message.into())
     }
 }

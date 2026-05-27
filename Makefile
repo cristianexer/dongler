@@ -1,4 +1,4 @@
-.PHONY: test test-rust test-python test-js test-docs build build-rust build-python build-js build-docs publish-dry-run
+.PHONY: test test-rust test-python test-js test-docs build build-rust build-python build-js build-docs eval-data eval-smoke publish-dry-run
 
 test: test-rust test-python test-js test-docs
 
@@ -35,6 +35,13 @@ build-js:
 build-docs:
 	cd website && npm install
 	cd website && NO_UPDATE_NOTIFIER=1 npm run build
+
+eval-data:
+	scripts/eval-data.sh all
+
+eval-smoke:
+	@test -n "$(PDF)" || (echo "usage: make eval-smoke PDF=path/to/file.pdf" >&2; exit 2)
+	scripts/eval-smoke.sh "$(PDF)"
 
 publish-dry-run:
 	cargo publish --dry-run --allow-dirty -p dongler-core

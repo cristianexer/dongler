@@ -6,6 +6,7 @@ const sidebars = {
     "pdf-workflow",
     "batch-processing",
     "api",
+    "evals",
     "bindings",
     "cli",
   ],

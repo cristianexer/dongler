@@ -26,17 +26,15 @@ Example output:
 ```text
 path: invoice.pdf
 format: pdf
-extraction_status: planned
+extraction_status: supported
 ```
 
 ## Extract
 
-Text files work today:
+Text and PDF files work today:
 
 ```bash
 dongler extract notes.txt --format markdown
 dongler extract notes.txt --format latex
+dongler extract invoice.pdf --format json
 ```
-
-PDF extraction will be added through the same command surface once the PDF
-engine lands.

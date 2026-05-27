@@ -41,9 +41,9 @@ doc.toObject();
 
 `toJson()` returns a JSON string. `toObject()` returns the typed document data.
 
-## Planned PDF Usage
+## PDF Usage
 
-The same object API is intended for PDFs:
+The same object API works for PDFs:
 
 ```ts
 const doc = load("invoice.pdf");
@@ -51,5 +51,5 @@ const markdown = doc.toMarkdown();
 const latex = doc.toLatex();
 ```
 
-Today, PDF paths return a planned-format error. That error comes from the Rust
-core and is surfaced consistently through both bindings.
+PDF documents expose the same render methods plus rich page/block fields such as
+`bbox`, `source_anchors`, `images`, and `warnings`.

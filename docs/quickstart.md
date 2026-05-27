@@ -62,8 +62,9 @@ dongler extract notes.txt --format latex
 dongler extract notes.txt --format json
 ```
 
-PDF paths are detected today, but extraction is planned:
+PDF paths use the native extraction engine:
 
 ```bash
 dongler inspect invoice.pdf
+dongler extract invoice.pdf --format json
 ```

@@ -1,13 +1,24 @@
 import { createRequire } from "node:module";
 
 import type {
+  Asset,
+  BBox,
   Block,
   BatchResult as BatchResultShape,
+  Confidence,
   Document,
+  ExtractOptions,
+  FigureBlock,
+  ImageObject,
+  Line,
   Metadata,
   Page,
+  SourceAnchor,
+  Span,
   TableBlock,
+  TableCell,
   TextBlock,
+  Warning,
 } from "./types.js";
 
 type NativeBinding = {
@@ -18,6 +29,7 @@ type NativeBinding = {
   toLatex(text: string): string;
   detectFormat(path: string): string;
   loadPathJson(path: string): string;
+  loadPathJsonWithOptions(path: string, optionsJson?: string | null): string;
   loadManyJson(paths: string[]): string;
   documentToMarkdown(documentJson: string): string;
   documentToJson(documentJson: string): string;
@@ -63,8 +75,11 @@ export class DonglerDocument {
 
 export type BatchResult = BatchResultShape<DonglerDocument>;
 
-export function load(path: string): DonglerDocument {
-  return new DonglerDocument(JSON.parse(native.loadPathJson(path)) as Document);
+export function load(path: string, options?: ExtractOptions): DonglerDocument {
+  const optionsJson = options ? JSON.stringify(options) : null;
+  return new DonglerDocument(
+    JSON.parse(native.loadPathJsonWithOptions(path, optionsJson)) as Document
+  );
 }
 
 export function loadMany(paths: string[]): BatchResult[] {
@@ -96,7 +111,25 @@ export function detectFormat(path: string): string {
   return native.detectFormat(path);
 }
 
-export type { Block, Document, Metadata, Page, TableBlock, TextBlock };
+export type {
+  Asset,
+  BBox,
+  Block,
+  Confidence,
+  Document,
+  ExtractOptions,
+  FigureBlock,
+  ImageObject,
+  Line,
+  Metadata,
+  Page,
+  SourceAnchor,
+  Span,
+  TableBlock,
+  TableCell,
+  TextBlock,
+  Warning,
+};
 
 function loadNativeBinding(): NativeBinding {
   const candidates = ["../dongler.node", "../dongler_node.node"];

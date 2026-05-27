@@ -82,16 +82,27 @@ The document object wraps Dongler's serializable IR:
 
 ```text
 Document
+  schema_version
   metadata
   pages[]
+  assets[]
+  warnings[]
 
 Page
   number
+  width
+  height
+  rotation
+  bbox
   blocks[]
+  images[]
+  assets[]
+  warnings[]
 
 Block
-  text | table
+  text | table | figure
 ```
 
-`TableBlock` already renders to Markdown and LaTeX. PDF table extraction will
-produce these table blocks once implemented.
+PDF blocks include source anchors and optional bounding boxes so rendered
+content can point back to page regions. `TableBlock` renders to Markdown and
+LaTeX when its extracted grid is rectangular.

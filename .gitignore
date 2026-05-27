@@ -47,3 +47,7 @@ node/vendor/
 website/node_modules/
 website/build/
 website/.docusaurus/
+
+# Evaluation downloads and generated reports
+eval/data/
+eval/out/

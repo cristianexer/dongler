@@ -10,9 +10,7 @@ Created by Daniel Fat.
 ## Status
 
 The npm package calls the Rust core through a NAPI native addon. It supports the
-same `.txt` extraction path as the Rust and Python packages today. PDF is the
-primary product target, but PDF extraction currently returns a planned-format
-error.
+same `.txt` and native PDF extraction paths as the Rust and Python packages.
 
 ## Install
 
@@ -20,9 +18,9 @@ error.
 npm install @cristianexer/dongler
 ```
 
-## Planned PDF Workflow
+## PDF Workflow
 
-The API is already shaped for PDF extraction:
+The object API works for PDFs:
 
 ```ts
 import { load } from "@cristianexer/dongler";
@@ -32,8 +30,8 @@ const markdown = doc.toMarkdown();
 const latex = doc.toLatex();
 ```
 
-Until the PDF engine lands, loading a PDF throws an error such as
-`pdf extraction is planned but not implemented yet`.
+PDF documents include page geometry, block source anchors, warnings, and image
+positions in `doc.toObject()` / `doc.toJson()`.
 
 ## Works Today
 

@@ -1,0 +1,51 @@
+{
+  "name": "dongler-public-v1",
+  "created_at": "2026-05-27",
+  "storage_root": "eval/data",
+  "datasets": [
+    {
+      "name": "doclaynet",
+      "task": "layout_detection",
+      "source": "https://huggingface.co/datasets/ds4sd/DocLayNet",
+      "download": "hf download ds4sd/DocLayNet --repo-type dataset --local-dir eval/data/doclaynet",
+      "metrics": ["layout_map", "block_f1", "bbox_iou"],
+      "notes": "Large COCO-format layout dataset from IBM Deep Search. Use a subset for local iteration."
+    },
+    {
+      "name": "pubtables-1m",
+      "task": "table_structure",
+      "source": "https://github.com/microsoft/table-transformer",
+      "download": "PUBTABLES1M_AZURE_URL=<generated-msro-url> scripts/eval-data.sh pubtables-1m",
+      "metrics": ["table_bbox_iou", "cell_bbox_iou", "cell_text_accuracy", "grits_topology"],
+      "notes": "Official dataset requires a generated Microsoft Research Open Data Azure URL/token."
+    },
+    {
+      "name": "olmocr-bench",
+      "task": "end_to_end_pdf_markdown",
+      "source": "https://github.com/allenai/olmocr",
+      "download": "git clone --depth 1 https://github.com/allenai/olmocr eval/data/olmocr",
+      "metrics": ["unit_pass_rate", "reading_order", "table_equation_figure_cases"],
+      "notes": "Benchmark suite covers thousands of tests across PDFs; Dongler can be evaluated by rendering Markdown candidates."
+    },
+    {
+      "name": "ckorzen-pdf-text-extraction",
+      "task": "scientific_pdf_text_order",
+      "source": "https://github.com/ckorzen/pdf-text-extraction-benchmark",
+      "download": "git clone --depth 1 https://github.com/ckorzen/pdf-text-extraction-benchmark eval/data/ckorzen-pdf-text-extraction",
+      "metrics": ["cer", "wer", "reading_order"],
+      "notes": "Academic PDF text extraction benchmark for semantic body text quality."
+    }
+  ],
+  "native_metrics": [
+    "pages_per_second",
+    "bytes_per_second",
+    "peak_memory_estimate",
+    "deterministic_output_hash",
+    "warning_count",
+    "anchored_block_rate"
+  ],
+  "ci_policy": {
+    "download_large_datasets": false,
+    "smoke_fixtures": ["crates/dongler-core/tests/core.rs generated PDFs"]
+  }
+}

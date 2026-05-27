@@ -1,0 +1,25 @@
+{
+  "name": "dongler-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Docusaurus documentation site for Dongler.",
+  "scripts": {
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "clear": "docusaurus clear",
+    "serve": "docusaurus serve"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.10.1",
+    "@docusaurus/preset-classic": "3.10.1",
+    "@mdx-js/react": "^3.0.0",
+    "clsx": "^2.1.1",
+    "prism-react-renderer": "^2.4.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {},
+  "overrides": {
+    "serialize-javascript": "^7.0.5"
+  }
+}

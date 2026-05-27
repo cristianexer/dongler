@@ -1,0 +1,22 @@
+[package]
+name = "dongler-node"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Daniel Fat"]
+description = "Created by Daniel Fat. Node.js bindings for the Dongler Rust document extraction core."
+repository = "https://github.com/cristianexer/dongler"
+publish = false
+
+[lib]
+name = "dongler_node"
+crate-type = ["cdylib"]
+
+[dependencies]
+dongler-core = { path = "../dongler-core", version = "0.1.0" }
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+serde_json = "1.0"
+
+[build-dependencies]
+napi-build = "2"

@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/dongler-core",
+    "crates/dongler-cli",
+    "crates/dongler-python",
+    "crates/dongler-node",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Daniel Fat"]
+description = "Created by Daniel Fat. Rust-native document extraction engine focused on structured Markdown and LaTeX output."
+repository = "https://github.com/cristianexer/dongler"

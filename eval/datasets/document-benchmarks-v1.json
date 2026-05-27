@@ -1,0 +1,244 @@
+{
+  "name": "document-benchmarks-v1",
+  "created_at": "2026-05-27",
+  "storage_root": "eval/data",
+  "default_disk_budget_gb": 100,
+  "default_max_pdfs_per_dataset": 50,
+  "datasets": [
+    {
+      "name": "DocLayNet",
+      "slug": "doclaynet",
+      "task": "layout block detection",
+      "source": "https://huggingface.co/datasets/ds4sd/DocLayNet",
+      "local_dir": "doclaynet",
+      "modality": "page images plus COCO layout annotations",
+      "download": {
+        "kind": "disabled",
+        "reason": "full image corpus is large; enable manually if layout-image benchmarking is needed"
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "layout_accuracy_if_aligned_ground_truth"],
+      "notes": "Human-annotated, diverse document pages; current Dongler native engine only evaluates PDFs found locally."
+    },
+    {
+      "name": "PubLayNet",
+      "slug": "publaynet",
+      "task": "scientific layout detection",
+      "source": "https://github.com/ibm-aur-nlp/PubLayNet",
+      "local_dir": "publaynet",
+      "modality": "page images plus COCO layout annotations",
+      "download": {
+        "kind": "disabled",
+        "reason": "full dataset is hundreds of thousands of page images"
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "layout_accuracy_if_aligned_ground_truth"],
+      "notes": "Large PMC-derived scientific layout benchmark."
+    },
+    {
+      "name": "DocBank",
+      "slug": "docbank",
+      "task": "token-level labels",
+      "source": "https://github.com/doc-analysis/DocBank",
+      "local_dir": "docbank",
+      "modality": "PDF-derived token labels plus images",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/doc-analysis/DocBank",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "token_label_accuracy_if_aligned_ground_truth"],
+      "notes": "Repository clone gives tooling/index/sample material without mirroring the full corpus."
+    },
+    {
+      "name": "PubTabNet",
+      "slug": "pubtabnet",
+      "task": "table structure",
+      "source": "https://github.com/ibm-aur-nlp/PubTabNet",
+      "local_dir": "pubtabnet",
+      "modality": "table images plus HTML-like structure targets",
+      "download": {
+        "kind": "disabled",
+        "reason": "full table-image corpus is large and not native-PDF aligned"
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "teds_if_aligned_ground_truth"],
+      "notes": "Useful for table structure, but requires image/table-render evaluation not implemented in native v1."
+    },
+    {
+      "name": "PubTables-1M",
+      "slug": "pubtables-1m",
+      "task": "table detection/structure",
+      "source": "https://github.com/microsoft/table-transformer",
+      "local_dir": "pubtables-1m",
+      "modality": "PDF pages, images, and table structure annotations",
+      "download": {
+        "kind": "external",
+        "env": "PUBTABLES1M_AZURE_URL",
+        "reason": "requires generated Microsoft Research Open Data Azure URL"
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "grits_if_aligned_ground_truth"],
+      "notes": "Supports GriTS-style scoring when official data is installed locally."
+    },
+    {
+      "name": "TableBank",
+      "slug": "tablebank",
+      "task": "table detection and recognition",
+      "source": "https://github.com/doc-analysis/TableBank",
+      "local_dir": "tablebank",
+      "modality": "Word/LaTeX-derived table images and labels",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/doc-analysis/TableBank",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "table_accuracy_if_aligned_ground_truth"],
+      "notes": "Repository clone gives metadata/tooling without full weakly supervised corpus mirroring."
+    },
+    {
+      "name": "FUNSD",
+      "slug": "funsd",
+      "task": "noisy forms",
+      "source": "https://guillaumejaume.github.io/FUNSD/",
+      "local_dir": "funsd",
+      "modality": "scanned form images plus annotations",
+      "download": {
+        "kind": "url",
+        "url": "https://guillaumejaume.github.io/FUNSD/dataset.zip",
+        "filename": "dataset.zip",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "form_ocr_accuracy_if_ocr_enabled"],
+      "notes": "Small OCR/form benchmark; native Dongler currently records image-only datasets as non-PDF coverage."
+    },
+    {
+      "name": "SROIE",
+      "slug": "sroie",
+      "task": "receipts",
+      "source": "https://github.com/zzzDavid/ICDAR-2019-SROIE",
+      "local_dir": "sroie",
+      "modality": "receipt images plus text/key-field annotations",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/zzzDavid/ICDAR-2019-SROIE",
+        "max_bytes": 5368709120
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "receipt_ocr_accuracy_if_ocr_enabled"],
+      "notes": "Scanned receipt benchmark; useful after OCR/image ingestion lands."
+    },
+    {
+      "name": "RVL-CDIP",
+      "slug": "rvl-cdip",
+      "task": "document classification",
+      "source": "https://catalog.data.gov/dataset/complex-document-information-processing-cdip-dataset",
+      "local_dir": "rvl-cdip",
+      "modality": "document images plus class labels",
+      "download": {
+        "kind": "disabled",
+        "reason": "large image classification corpus; routing benchmark, not structure extraction"
+      },
+      "metrics": ["routing_accuracy_if_classifier_enabled"],
+      "notes": "Useful for future routing/classification, not current PDF structure extraction."
+    },
+    {
+      "name": "READoc",
+      "slug": "readoc",
+      "task": "structured extraction",
+      "source": "https://huggingface.co/datasets/lazyc/READoc",
+      "local_dir": "readoc",
+      "modality": "PDF-to-Markdown structured extraction",
+      "download": {
+        "kind": "disabled",
+        "reason": "license/tooling must be validated before automatic mirroring"
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "markdown_similarity_if_targets_available"],
+      "notes": "Newer benchmark; kept opt-in until license and tooling are explicitly reviewed."
+    },
+    {
+      "name": "OmniDocBench",
+      "slug": "omnidocbench",
+      "task": "end-to-end PDF parsing",
+      "source": "https://huggingface.co/datasets/opendatalab/OmniDocBench",
+      "local_dir": "omnidocbench",
+      "modality": "PDFs/images plus document parsing annotations",
+      "download": {
+        "kind": "hf",
+        "repo": "opendatalab/OmniDocBench",
+        "include": ["OmniDocBench.json", "ori_pdfs/**"],
+        "max_bytes": 5368709120
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "pages_per_second", "markdown_similarity_if_targets_available"],
+      "notes": "Moderate-size modern PDF parsing benchmark suitable for local native-PDF smoke evaluation."
+    },
+    {
+      "name": "olmOCR-Bench",
+      "slug": "olmocr-bench",
+      "task": "unit-style OCR/PDF parsing tests",
+      "source": "https://huggingface.co/datasets/allenai/olmOCR-bench",
+      "local_dir": "olmocr-bench",
+      "modality": "PDFs plus pass/fail parser checks",
+      "download": {
+        "kind": "hf",
+        "repo": "allenai/olmOCR-bench",
+        "include": ["*.yaml", "*.json", "**/*.pdf"],
+        "max_bytes": 21474836480
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "pages_per_second", "unit_pass_rate_if_olmocr_harness_enabled"],
+      "notes": "Strong deterministic CI fit; this runner first measures native parse coverage on local PDFs."
+    },
+    {
+      "name": "ckorzen benchmark",
+      "slug": "ckorzen",
+      "task": "PDF text extraction",
+      "source": "https://github.com/ckorzen/pdf-text-extraction-benchmark",
+      "local_dir": "ckorzen-pdf-text-extraction",
+      "modality": "scientific PDFs plus text extraction targets",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/ckorzen/pdf-text-extraction-benchmark",
+        "max_bytes": 5368709120
+      },
+      "metrics": ["pdf_parse_success", "anchored_block_rate", "pages_per_second", "text_accuracy_if_targets_available"],
+      "notes": "Good native text, order, paragraph, and role benchmark when reference targets are present locally."
+    },
+    {
+      "name": "S2ORC",
+      "slug": "s2orc",
+      "task": "scientific text/reference comparison",
+      "source": "https://github.com/allenai/s2orc",
+      "local_dir": "s2orc",
+      "modality": "scientific paper JSON/text corpus",
+      "download": {
+        "kind": "disabled",
+        "reason": "very large corpus and not a direct PDF geometry benchmark"
+      },
+      "metrics": ["reference_text_similarity_if_aligned_pdfs_available"],
+      "notes": "Useful as text/reference comparison data, not direct PDF geometry truth."
+    },
+    {
+      "name": "PMC OA",
+      "slug": "pmc-oa",
+      "task": "scientific XML/PDF source",
+      "source": "https://pmc.ncbi.nlm.nih.gov/tools/openftlist/",
+      "local_dir": "pmc-oa",
+      "modality": "scientific XML/PDF source packages",
+      "download": {
+        "kind": "disabled",
+        "reason": "article-level licenses vary; mirror subsets deliberately"
+      },
+      "metrics": ["pdf_parse_success", "xml_text_similarity_if_aligned_articles_available"],
+      "notes": "Licence varies by article, so automatic bulk download is disabled."
+    },
+    {
+      "name": "arXiv source/PDF",
+      "slug": "arxiv",
+      "task": "PDF-to-LaTeX/Markdown targets",
+      "source": "https://info.arxiv.org/help/bulk_data_s3.html",
+      "local_dir": "arxiv",
+      "modality": "PDFs plus TeX sources",
+      "download": {
+        "kind": "disabled",
+        "reason": "bulk source/PDF alignment requires careful licence and source mapping"
+      },
+      "metrics": ["pdf_parse_success", "latex_markdown_similarity_if_aligned_sources_available"],
+      "notes": "Keep opt-in; source/PDF alignment and licensing require explicit sampling."
+    }
+  ]
+}

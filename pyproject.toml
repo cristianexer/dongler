@@ -43,3 +43,7 @@ dev = [
     "maturin>=1.8,<1.9",
     "pytest>=8.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+norecursedirs = ["eval/data", "eval/out"]

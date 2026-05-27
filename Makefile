@@ -1,4 +1,4 @@
-.PHONY: test test-rust test-python test-js test-docs build build-rust build-python build-js build-docs eval-data eval-smoke publish-dry-run
+.PHONY: test test-rust test-python test-js test-docs build build-rust build-python build-js build-docs eval-data eval-smoke bench-data bench-run bench publish-dry-run
 
 test: test-rust test-python test-js test-docs
 
@@ -42,6 +42,14 @@ eval-data:
 eval-smoke:
 	@test -n "$(PDF)" || (echo "usage: make eval-smoke PDF=path/to/file.pdf" >&2; exit 2)
 	scripts/eval-smoke.sh "$(PDF)"
+
+bench-data:
+	python3 scripts/download-benchmark-data.py
+
+bench-run:
+	python3 scripts/run-benchmarks.py --update-readme
+
+bench: bench-data bench-run
 
 publish-dry-run:
 	cargo publish --dry-run --allow-dirty -p dongler-core

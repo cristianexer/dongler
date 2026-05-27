@@ -1,6 +1,6 @@
-.PHONY: test test-rust test-python test-js build build-rust build-python build-js publish-dry-run
+.PHONY: test test-rust test-python test-js test-docs build build-rust build-python build-js build-docs publish-dry-run
 
-test: test-rust test-python test-js
+test: test-rust test-python test-js test-docs
 
 test-rust:
 	cargo test --workspace
@@ -14,7 +14,12 @@ test-js:
 	cd node && npm install
 	cd node && npm test
 
-build: build-rust build-python build-js
+test-docs:
+	cd website && npm install
+	cd website && npm audit --audit-level=high
+	cd website && NO_UPDATE_NOTIFIER=1 npm run build
+
+build: build-rust build-python build-js build-docs
 
 build-rust:
 	cargo build -p dongler-core -p dongler
@@ -26,6 +31,10 @@ build-python:
 build-js:
 	cd node && npm install
 	cd node && npm run build
+
+build-docs:
+	cd website && npm install
+	cd website && NO_UPDATE_NOTIFIER=1 npm run build
 
 publish-dry-run:
 	cargo publish --dry-run --allow-dirty -p dongler-core

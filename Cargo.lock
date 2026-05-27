@@ -156,6 +156,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "serde_json",
 ]
 
 [[package]]
@@ -164,6 +165,7 @@ version = "0.1.0"
 dependencies = [
  "dongler-core",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

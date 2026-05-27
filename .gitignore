@@ -20,6 +20,9 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# macOS
+.DS_Store
+
 # Python
 .venv/
 dist/
@@ -38,4 +41,8 @@ node/LICENSE
 node/NOTICE
 node/src/native.d.ts
 node/vendor/
-node/package-lock.json
+
+# Documentation site
+website/node_modules/
+website/build/
+website/.docusaurus/

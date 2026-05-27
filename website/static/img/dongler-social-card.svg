@@ -1,0 +1,12 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#F7F3EC"/>
+  <rect x="72" y="72" width="1056" height="486" rx="28" fill="#20383F"/>
+  <path d="M162 154h188l76 76v246H162V154Z" fill="#F7F3EC"/>
+  <path d="M350 154v80h76" fill="#D8E8E5"/>
+  <path d="M214 296h158M214 356h112M214 416h158" stroke="#2F6F73" stroke-width="18" stroke-linecap="round"/>
+  <rect x="508" y="172" width="112" height="28" rx="14" fill="#7FC9C4"/>
+  <rect x="508" y="224" width="188" height="28" rx="14" fill="#C46E3E"/>
+  <rect x="508" y="276" width="148" height="28" rx="14" fill="#F0B35B"/>
+  <text x="506" y="390" fill="#F7F3EC" font-family="Inter, Arial, sans-serif" font-size="88" font-weight="800">dongler</text>
+  <text x="512" y="458" fill="#D8E8E5" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="500">Structure from messy documents</text>
+</svg>

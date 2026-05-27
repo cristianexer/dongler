@@ -32,3 +32,10 @@ export interface Metadata {
   word_count: number;
   block_count: number;
 }
+
+export interface BatchResult<TDocument = Document> {
+  path: string;
+  ok: boolean;
+  document: TDocument | null;
+  error: string | null;
+}

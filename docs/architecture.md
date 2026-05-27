@@ -1,9 +1,12 @@
+---
+sidebar_position: 6
+---
+
 # Architecture
 
-Dongler is organized around a small Rust core and thin ecosystem bindings. The
-core crate owns extraction, the document IR, and rendering. The Python and Node
-packages call Rust through native bindings and should not reimplement document
-parsing or rendering logic.
+Dongler is organized around a Rust core, path-based loaders, extraction engines,
+and thin ecosystem bindings. The public API returns a document object so users
+can render Markdown, LaTeX, or JSON without re-running extraction.
 
 ## Crate Boundaries
 
@@ -26,16 +29,14 @@ dongler-node
   lib.rs      NAPI-RS functions over dongler-core
 ```
 
-The public APIs in Rust, Python, and TypeScript expose the same basic operations:
+The public APIs in Rust, Python, and TypeScript expose the same operations:
 
-- `parse_text`
-- `to_markdown`
-- `to_latex`
-- `to_json`
+- load one path
+- load many paths
+- render from a document object
 - `detect_format`
 
-The names differ only where ecosystem conventions require it, such as
-`parseText` in TypeScript.
+The original text helpers remain available for compatibility.
 
 ## Data Flow
 
@@ -45,8 +46,8 @@ input path or text
   -> SourceLoader
   -> ExtractionEngine
   -> Document IR
-  -> Renderer
-  -> Markdown, LaTeX, or JSON
+  -> Document object
+  -> Markdown, LaTeX, or JSON renderers
 ```
 
 This separation keeps future PDF work contained. A PDF implementation should add
@@ -61,6 +62,8 @@ same `Document` IR used by the existing renderers.
 - Add output formats through new `Renderer` implementations.
 - Keep unsupported formats detectable when useful, but return explicit planned
   errors until extraction is implemented.
+- Keep path/object APIs stable so the PDF engine can land without changing user
+  code.
 
 ## Current IR Contract
 

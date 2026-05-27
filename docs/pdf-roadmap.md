@@ -1,10 +1,14 @@
+---
+sidebar_position: 7
+---
+
 # PDF Roadmap
 
 Dongler should become useful by doing one hard workflow well: extracting text,
 tables, layout, and metadata from PDFs into Markdown and LaTeX.
 
-The project should avoid claiming broad document support before the PDF path is
-good enough for real use.
+The path/object API already exists. The missing piece is the PDF extraction
+engine behind `load("file.pdf")`.
 
 ## Phase 1: Text Extraction
 

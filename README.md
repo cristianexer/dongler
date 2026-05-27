@@ -1,40 +1,34 @@
-<img src="assets/dongler-banner.svg" alt="dongler - Structure from messy documents" width="100%">
+<p align="center">
+  <img src="assets/logo.png" alt="Dongler logo" width="132">
+</p>
 
 # Dongler
 
-Dongler is a Rust-native document extraction engine with Python and JavaScript
-bindings. Its job is to turn messy documents into structured data, then render
-that structure into formats developers can use.
+Dongler is a Rust-native document extraction engine with Python and TypeScript
+bindings. It is built for the workflow developers actually need: load a
+document path, extract structure once, then render clean Markdown or LaTeX from
+the same document object.
 
 Created by Daniel Fat.
 
-## Project Status
+## Status
 
-Dongler `0.1.0` is an initial working release, not a finished PDF extractor.
-The current engine extracts plain text into a document IR and renders that IR as
-Markdown, LaTeX, or JSON. The package structure is designed around the next
-major target: PDF extraction with reliable text, tables, layout, and metadata.
+Dongler `0.1.0` ships the stable package shape and a real `.txt` extraction
+path. PDF is the primary product target and the public API is designed for that
+workflow, but PDF extraction is not implemented yet.
 
-The product focus is deliberately narrow:
+| Format | Detection | Extraction |
+| --- | --- | --- |
+| `.txt`, `.text` | yes | supported |
+| `.pdf` | yes | planned |
+| Word, Excel, HTML, images, email | yes | planned |
 
-- Do PDF extraction well.
-- Produce clean Markdown and LaTeX.
-- Keep JSON and the internal IR stable enough for developers to build on.
-- Add Word, Excel, HTML, images, and email only after the PDF path is strong.
+Current outputs:
 
-## What Works Today
-
-- `.txt` extraction through the Rust core.
-- Paragraph splitting into `TextBlock` values.
-- Markdown rendering.
-- LaTeX rendering with escaping for LaTeX-sensitive characters.
-- JSON rendering of the internal document IR.
-- CLI, Python, and TypeScript APIs that call the Rust implementation.
-- Format detection for text, PDF, Excel, Word, HTML, images, and email.
-
-PDF, table, and layout extraction are planned. The CLI detects PDFs today, but
-extraction returns a clear planned-but-not-implemented error until the PDF engine
-lands.
+- Markdown
+- LaTeX
+- JSON
+- Dongler's typed document IR
 
 ## Install
 
@@ -45,134 +39,196 @@ npm install dongler
 ```
 
 For Rust library usage, depend on `dongler-core`. The public `dongler` crate is
-the CLI package so `cargo install dongler` works as expected.
+the CLI package.
 
-## CLI
+## Planned PDF Workflow
 
-```bash
-dongler --version
-dongler inspect notes.txt
-dongler extract notes.txt --format markdown
-dongler extract notes.txt --format latex
-dongler extract notes.txt --format json
-```
-
-`inspect` reports the detected format and whether extraction is currently
-supported:
-
-```text
-path: report.pdf
-format: pdf
-extraction_status: planned
-```
-
-## API Examples
-
-Rust:
-
-```rust
-use dongler_core::{parse_text, to_latex, to_markdown};
-
-fn main() -> dongler_core::Result<()> {
-    let document = parse_text("Hello from Dongler\n\nSecond paragraph")?;
-    println!("blocks: {}", document.metadata.block_count);
-    println!("{}", to_markdown("Hello from Dongler")?);
-    println!("{}", to_latex("Revenue is 100%")?);
-    Ok(())
-}
-```
+This is the API Dongler is building toward. Today, the same calls detect PDFs
+and return a clear planned-format error until the PDF engine lands.
 
 Python:
 
 ```python
 import dongler
 
-doc = dongler.parse_text("Hello from Dongler\n\nSecond paragraph")
-print(doc["metadata"]["block_count"])
-print(dongler.to_markdown("Hello from Dongler"))
-print(dongler.to_latex("Revenue is 100%"))
+doc = dongler.load("invoice.pdf")
+markdown = doc.to_markdown()
+latex = doc.to_latex()
 ```
 
 TypeScript:
 
 ```ts
-import { parseText, toLatex, toMarkdown } from "dongler";
+import { load } from "dongler";
 
-const doc = parseText("Hello from Dongler\n\nSecond paragraph");
+const doc = load("invoice.pdf");
+const markdown = doc.toMarkdown();
+const latex = doc.toLatex();
+```
+
+Rust:
+
+```rust
+use dongler_core::load_path;
+
+fn main() -> dongler_core::Result<()> {
+    let doc = load_path("invoice.pdf")?;
+    println!("{}", doc.to_markdown()?);
+    Ok(())
+}
+```
+
+## Works Today
+
+The same object API works today for text files.
+
+Python:
+
+```python
+import dongler
+
+doc = dongler.load("notes.txt")
+print(doc.metadata["block_count"])
+print(doc.to_markdown())
+print(doc.to_latex())
+```
+
+TypeScript:
+
+```ts
+import { load } from "dongler";
+
+const doc = load("notes.txt");
 console.log(doc.metadata.block_count);
-console.log(toMarkdown("Hello from Dongler"));
-console.log(toLatex("Revenue is 100%"));
+console.log(doc.toMarkdown());
+console.log(doc.toLatex());
 ```
 
-## Package Map
+Rust:
 
-```text
-crates/dongler-core      Rust source of truth: IR, engines, loaders, renderers
-crates/dongler-cli       `dongler` command line interface
-crates/dongler-python    PyO3 extension module used by the Python package
-crates/dongler-node      NAPI-RS native addon used by the npm package
-python/dongler           Thin Python API over the Rust extension
-node/src                 TypeScript API and public types over the native addon
-docs                     Architecture, roadmap, and private corpus notes
+```rust
+use dongler_core::load_path;
+
+fn main() -> dongler_core::Result<()> {
+    let doc = load_path("notes.txt")?;
+    println!("blocks: {}", doc.metadata.block_count);
+    println!("{}", doc.to_latex()?);
+    Ok(())
+}
 ```
 
-Rust owns extraction logic. Python and TypeScript only adapt Rust results into
-native package APIs.
+## Batch Processing
+
+Batch processing returns one result per file. One bad or unsupported document
+does not stop the batch.
+
+Python:
+
+```python
+import dongler
+
+for result in dongler.load_many(["notes.txt", "invoice.pdf"]):
+    if result["ok"]:
+        print(result["document"].to_markdown())
+    else:
+        print(f"{result['path']}: {result['error']}")
+```
+
+TypeScript:
+
+```ts
+import { loadMany } from "dongler";
+
+for (const result of loadMany(["notes.txt", "invoice.pdf"])) {
+  if (result.ok) {
+    console.log(result.document!.toMarkdown());
+  } else {
+    console.error(`${result.path}: ${result.error}`);
+  }
+}
+```
+
+Rust:
+
+```rust
+use dongler_core::load_many;
+
+for result in load_many(["notes.txt", "invoice.pdf"]) {
+    if result.ok {
+        println!("{}", result.document.unwrap().to_markdown().unwrap());
+    } else {
+        eprintln!("{}: {}", result.path, result.error.unwrap());
+    }
+}
+```
+
+## CLI
+
+```bash
+dongler --version
+dongler inspect notes.txt
+dongler inspect invoice.pdf
+dongler extract notes.txt --format markdown
+dongler extract notes.txt --format latex
+dongler extract notes.txt --format json
+```
+
+PDF extraction through the CLI will use the same engine as the Rust, Python, and
+TypeScript packages once it is implemented.
+
+## API Surface
+
+The high-level object API:
+
+- Rust: `load_path(path)`, `load_many(paths)`, `doc.to_markdown()`,
+  `doc.to_latex()`, `doc.to_json()`
+- Python: `dongler.load(path)`, `dongler.load_many(paths)`,
+  `doc.to_markdown()`, `doc.to_latex()`, `doc.to_json()`
+- TypeScript: `load(path)`, `loadMany(paths)`, `doc.toMarkdown()`,
+  `doc.toLatex()`, `doc.toJson()`
+
+Compatibility functions remain available:
+
+- `parse_text`
+- `to_markdown`
+- `to_latex`
+- `to_json`
+- `detect_format`
 
 ## Architecture
 
+Rust is the source of truth. Python and TypeScript are thin native bindings over
+the Rust core.
+
 ```mermaid
 flowchart LR
-    Input["File or text input"] --> Detect["Format detection"]
-    Detect --> Loader["SourceLoader"]
-    Loader --> Engine["ExtractionEngine"]
+    Path["Document path"] --> Format["Format detection"]
+    Format --> Loader["Source loader"]
+    Loader --> Engine["Extraction engine"]
     Engine --> IR["Document IR"]
-    IR --> Markdown["Markdown renderer"]
-    IR --> Latex["LaTeX renderer"]
-    IR --> Json["JSON renderer"]
-    Core["dongler-core"] --> CLI["dongler CLI"]
-    Core --> Py["PyO3 Python binding"]
-    Core --> Napi["NAPI-RS Node binding"]
+    IR --> Markdown["Markdown"]
+    IR --> Latex["LaTeX"]
+    IR --> Json["JSON"]
+    IR --> Python["Python object API"]
+    IR --> TypeScript["TypeScript object API"]
+    IR --> CLI["CLI"]
 ```
 
-The important boundary is the `Document` IR. Engines convert source material
-into the IR. Renderers convert the IR into output formats. Bindings expose the
-same Rust behavior to each ecosystem.
+The current text engine proves the pipeline. The PDF engine will plug into the
+same loader, engine, IR, and renderer boundaries.
 
-Read more in [docs/architecture.md](docs/architecture.md).
+## Documentation
 
-## Document IR
+The Docusaurus documentation site lives in `website/` and builds from `docs/`.
 
-The current IR is intentionally small:
-
-- `Document`: metadata plus pages.
-- `Page`: page number plus ordered blocks.
-- `Block`: tagged text or table content.
-- `TextBlock`: paragraph text with a simple kind.
-- `TableBlock`: headers, rows, and optional caption.
-- `Metadata`: format, engine, source, title, character count, word count, and
-  block count.
-
-The renderers already know how to render `TableBlock` values to Markdown and
-LaTeX. The current text engine does not extract tables yet; that work belongs in
-the PDF/table extraction engines.
-
-## PDF Roadmap
-
-The first serious document target is PDF. The planned sequence is:
-
-1. Extract page text with stable reading order.
-2. Preserve page-level metadata and document metadata.
-3. Detect simple ruled and unruled tables.
-4. Add layout coordinates to IR blocks.
-5. Render PDF-derived content cleanly to Markdown and LaTeX.
-6. Expand to Word, Excel, HTML, images, and email after the PDF path is useful.
-
-See [docs/pdf-roadmap.md](docs/pdf-roadmap.md) for the working roadmap.
+```bash
+cd website
+npm install
+npm run start
+npm run build
+```
 
 ## Development
-
-Use `uv` for Python development. Do not add `requirements.txt`.
 
 ```bash
 make test
@@ -185,42 +241,8 @@ Focused commands:
 make test-rust
 make test-python
 make test-js
+make build-docs
 ```
-
-Private corpus tests are supported in CI through a private archive URL and
-checksum. The corpus is not committed to the repository. See
-[docs/private-corpus.md](docs/private-corpus.md).
-
-## Publishing
-
-The `Build and Publish` GitHub Actions workflow publishes from `main` after
-public tests and private corpus smoke tests pass.
-
-Required GitHub secrets:
-
-- `CARGO_REGISTRY_TOKEN`: crates.io API token with publish rights for
-  `dongler-core` and `dongler`.
-- `NPM_TOKEN`: npm automation token with publish rights for `dongler`.
-- `DONGLER_CORPUS_URL`: private HTTPS URL for a `.tar.gz` corpus archive.
-- `DONGLER_CORPUS_SHA256`: SHA-256 checksum of that private corpus archive.
-- `DONGLER_CORPUS_AUTH_HEADER`: optional HTTP auth header for the corpus URL.
-
-PyPI is configured for trusted publishing through the workflow environment
-`pypi`, so no PyPI token is required when that publisher is configured.
-
-Dry-run commands:
-
-```bash
-cargo publish --dry-run -p dongler-core
-cargo publish --dry-run -p dongler
-uv build
-uv run maturin build
-cd node && npm pack --dry-run
-cd node && npm publish --dry-run
-```
-
-Publish `dongler-core` before the CLI package `dongler`; the CLI depends on the
-core crate by version.
 
 ## License
 

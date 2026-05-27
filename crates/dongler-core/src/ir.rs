@@ -42,3 +42,11 @@ pub struct Metadata {
     pub word_count: usize,
     pub block_count: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchResult {
+    pub path: String,
+    pub ok: bool,
+    pub document: Option<Document>,
+    pub error: Option<String>,
+}

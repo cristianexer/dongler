@@ -142,7 +142,7 @@ jobs:
           command: build
           maturin-version: v1.8.7
           manylinux: "2014"
-          args: --release --locked --sdist --out dist/python --interpreter python3.9 --compatibility manylinux2014
+          args: --release --locked --sdist --out dist/python --interpreter python3.9
       - name: Package Rust core crate
         run: |
           set -euo pipefail

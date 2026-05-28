@@ -494,6 +494,48 @@ def test_benchmark_dataset_balances_pdf_selection_across_subdirectories(
     ]
 
 
+def test_benchmark_dataset_evaluates_all_pdfs_without_limit(tmp_path, monkeypatch):
+    runner = load_runner()
+    data_root = tmp_path / "data"
+    local_dir = data_root / "all-dataset"
+    for split in ["alpha", "beta"]:
+        split_dir = local_dir / split
+        split_dir.mkdir(parents=True)
+        for index in range(3):
+            (split_dir / f"{index}.pdf").write_bytes(b"%PDF")
+    evaluated = []
+
+    def fake_run_document(_cli, path, json_out):
+        evaluated.append(path.relative_to(local_dir).as_posix())
+        json_out.write_text(json.dumps({"pages": [{"blocks": []}]}))
+        return True, 0.25, None
+
+    monkeypatch.setattr(runner, "run_document", fake_run_document)
+
+    result = runner.benchmark_dataset(
+        {
+            "name": "All Dataset",
+            "slug": "all-dataset",
+            "task": "uncapped selection",
+            "local_dir": "all-dataset",
+        },
+        data_root,
+        tmp_path / "out",
+        tmp_path / "dongler",
+        max_pdfs=None,
+    )
+
+    assert result["documents_evaluated"] == 6
+    assert evaluated == [
+        "alpha/0.pdf",
+        "alpha/1.pdf",
+        "alpha/2.pdf",
+        "beta/0.pdf",
+        "beta/1.pdf",
+        "beta/2.pdf",
+    ]
+
+
 def test_benchmark_dataset_balances_olmocr_pdf_selection_across_splits(
     tmp_path, monkeypatch
 ):
@@ -631,6 +673,31 @@ def test_markdown_table_uses_compact_renderable_columns():
     assert {line.count("|") for line in table.splitlines() if line.startswith("|")} == {8}
     assert "| DemoBench | ok | 10.0 MB | 2 | 100.0% / 50.0% / 75.0% | 42.25 | 91.0% |" in table
     assert "long note" not in table
+
+
+def test_markdown_table_describes_uncapped_benchmarks():
+    runner = load_runner()
+    table = runner.markdown_table(
+        [
+            {
+                "dataset": "DemoBench",
+                "status": "ok",
+                "local_bytes": 10 * 1024 * 1024,
+                "pdfs_evaluated": 3,
+                "documents_evaluated": 3,
+                "parse_success_rate": 1.0,
+                "bbox_block_rate": 1.0,
+                "anchored_block_rate": 1.0,
+                "pages_per_second": 25.0,
+                "ground_truth_accuracy": None,
+            }
+        ],
+        "2026-05-28 17:08:41 BST",
+        None,
+    )
+
+    assert "All discovered files per dataset" in table
+    assert "Cap:" not in table
 
 
 def test_benchmark_dataset_evaluates_images_when_no_pdfs(tmp_path, monkeypatch):

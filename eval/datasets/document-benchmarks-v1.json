@@ -3,7 +3,7 @@
   "created_at": "2026-05-27",
   "storage_root": "eval/data",
   "default_disk_budget_gb": 100,
-  "default_max_pdfs_per_dataset": 50,
+  "default_max_pdfs_per_dataset": null,
   "datasets": [
     {
       "name": "DocLayNet",

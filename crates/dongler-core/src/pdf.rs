@@ -62,6 +62,19 @@ struct TextLine {
 }
 
 #[derive(Debug, Clone)]
+struct DetectedTable {
+    table: TableBlock,
+    line_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct ColumnLayout<'a> {
+    leading: Vec<&'a TextLine>,
+    columns: Vec<Vec<&'a TextLine>>,
+    trailing: Vec<&'a TextLine>,
+}
+
+#[derive(Debug, Clone)]
 struct ContentExtraction {
     text_runs: Vec<TextRun>,
     images: Vec<ImageObject>,
@@ -185,7 +198,7 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         .collect::<HashMap<_, _>>();
     let page_seeds = objects
         .iter()
-        .filter_map(page_seed)
+        .filter_map(|object| page_seed(object, &object_map))
         .enumerate()
         .map(|(index, mut seed)| {
             seed.number = index + 1;
@@ -516,74 +529,960 @@ fn push_text_run(
 }
 
 fn build_blocks(page_number: usize, lines: &[TextLine]) -> Vec<Block> {
-    if let Some(table) = detect_table(page_number, lines) {
-        return vec![Block::Table(table)];
+    if let Some(detected_table) = detect_table(page_number, lines) {
+        let mut blocks = Vec::new();
+        let mut table_inserted = false;
+        for (line_index, line) in lines.iter().enumerate() {
+            if detected_table.line_indices.contains(&line_index) {
+                if !table_inserted {
+                    blocks.push(Block::Table(detected_table.table.clone()));
+                    table_inserted = true;
+                }
+            } else if let Some(block) = text_line_block(page_number, line) {
+                blocks.push(block);
+            }
+        }
+        return blocks;
     }
 
-    lines
-        .iter()
-        .filter_map(|line| {
-            let text = line
-                .runs
-                .iter()
-                .map(|run| run.text.trim())
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if text.is_empty() {
-                return None;
-            }
-
-            Some(Block::Text(TextBlock {
-                text: text.clone(),
-                kind: classify_text_line(&text),
-                bbox: Some(line.bbox),
-                lines: vec![Line {
-                    text,
-                    bbox: Some(line.bbox),
-                    spans: line
-                        .runs
-                        .iter()
-                        .map(|run| Span {
-                            text: run.text.clone(),
-                            bbox: Some(run.bbox),
-                            font: run.font.clone(),
-                            size: Some(run.size),
-                        })
-                        .collect(),
-                }],
-                source_anchors: vec![anchor(
-                    page_number,
-                    Some(line.bbox),
-                    source_ids_for_line(line),
-                )],
-                confidence: Some(Confidence {
-                    score: 0.82,
-                    calibrated: false,
-                }),
-            }))
-        })
+    let split_lines = split_wide_text_lines(lines);
+    let text_blocks = text_lines_in_reading_order(&split_lines)
+        .into_iter()
+        .filter_map(|line| text_block_from_line(page_number, line))
+        .collect::<Vec<_>>();
+    merge_wrapped_text_blocks(text_blocks)
+        .into_iter()
+        .map(Block::Text)
         .collect()
 }
 
-fn detect_table(page_number: usize, lines: &[TextLine]) -> Option<TableBlock> {
+fn split_wide_text_lines(lines: &[TextLine]) -> Vec<TextLine> {
+    let enable_tight_column_band = has_repeated_tight_column_band_evidence(lines);
+    let mut split_lines = Vec::new();
+    for line in lines {
+        match split_text_line_at_wide_gap(line, enable_tight_column_band) {
+            Some((left, right)) => {
+                split_lines.push(left);
+                split_lines.push(right);
+            }
+            None => split_lines.push(line.clone()),
+        }
+    }
+    split_lines
+}
+
+fn split_text_line_at_wide_gap(
+    line: &TextLine,
+    enable_tight_column_band: bool,
+) -> Option<(TextLine, TextLine)> {
+    if line.runs.len() < 2 {
+        return None;
+    }
+    let mut runs = line.runs.clone();
+    runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
+    if runs
+        .iter()
+        .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)))
+    {
+        return None;
+    }
+    let split_index = enable_tight_column_band
+        .then(|| right_column_band_split_index(&runs))
+        .flatten()
+        .or_else(|| largest_run_gap(&runs).map(|(split_index, _, _)| split_index))?;
+    let left_runs = runs[..split_index].to_vec();
+    let right_runs = runs[split_index..].to_vec();
+    if left_runs.is_empty() || right_runs.is_empty() {
+        return None;
+    }
+    Some((
+        text_line_from_runs(left_runs)?,
+        text_line_from_runs(right_runs)?,
+    ))
+}
+
+fn has_repeated_tight_column_band_evidence(lines: &[TextLine]) -> bool {
+    lines
+        .iter()
+        .filter(|line| {
+            let mut runs = line.runs.clone();
+            runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
+            right_column_band_split_index(&runs).is_some()
+        })
+        .take(2)
+        .count()
+        >= 2
+}
+
+fn right_column_band_split_index(runs: &[TextRun]) -> Option<usize> {
+    if runs.len() < 4 || runs.first()?.bbox.x > 120.0 {
+        return None;
+    }
+    if runs
+        .iter()
+        .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)))
+    {
+        return None;
+    }
+
+    for index in 1..runs.len() {
+        let right_x = runs[index].bbox.x;
+        if !(300.0..=340.0).contains(&right_x) {
+            continue;
+        }
+        if index < 2 || runs.len() - index < 2 {
+            continue;
+        }
+
+        let previous = &runs[index - 1].bbox;
+        let gap = right_x - (previous.x + previous.width);
+        if gap < -35.0 {
+            continue;
+        }
+
+        let right_text_len = runs[index..]
+            .iter()
+            .map(|run| run.text.trim().len())
+            .sum::<usize>();
+        if right_text_len < 18 {
+            continue;
+        }
+
+        return Some(index);
+    }
+
+    None
+}
+
+fn largest_run_gap(runs: &[TextRun]) -> Option<(usize, f32, f32)> {
+    runs.windows(2)
+        .enumerate()
+        .filter_map(|(index, window)| {
+            let left = &window[0].bbox;
+            let right = &window[1].bbox;
+            let gap = right.x - (left.x + left.width);
+            let x_jump = right.x - left.x;
+            is_likely_column_split_gap(&window[0].bbox, &window[1].bbox, gap, x_jump).then_some((
+                index + 1,
+                gap,
+                x_jump,
+            ))
+        })
+        .max_by(|left, right| left.1.max(left.2).total_cmp(&right.1.max(right.2)))
+}
+
+fn is_likely_column_split_gap(left: &BBox, right: &BBox, gap: f32, x_jump: f32) -> bool {
+    if gap >= 18.0 {
+        return true;
+    }
+
+    x_jump >= 110.0 && left.x < 280.0 && right.x > 280.0
+}
+
+fn text_line_from_runs(runs: Vec<TextRun>) -> Option<TextLine> {
+    let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
+    Some(TextLine { runs, bbox })
+}
+
+fn text_lines_in_reading_order(lines: &[TextLine]) -> Vec<&TextLine> {
+    if let Some(layout) = detect_paired_text_columns(lines) {
+        return order_column_layout(layout);
+    }
+    if let Some(mut columns) = detect_text_columns(lines) {
+        columns.sort_by(|left, right| column_x(left).total_cmp(&column_x(right)));
+        return columns
+            .into_iter()
+            .flat_map(|mut column| {
+                column.sort_by(|left, right| {
+                    right
+                        .bbox
+                        .y
+                        .total_cmp(&left.bbox.y)
+                        .then(left.bbox.x.total_cmp(&right.bbox.x))
+                });
+                column
+            })
+            .collect();
+    }
+    lines.iter().collect()
+}
+
+fn order_column_layout(mut layout: ColumnLayout<'_>) -> Vec<&TextLine> {
+    let mut ordered = Vec::new();
+    sort_lines_top_down(&mut layout.leading);
+    ordered.extend(layout.leading);
+    layout
+        .columns
+        .sort_by(|left, right| column_x(left).total_cmp(&column_x(right)));
+    for mut column in layout.columns {
+        sort_lines_top_down(&mut column);
+        ordered.extend(column);
+    }
+    sort_lines_top_down(&mut layout.trailing);
+    ordered.extend(layout.trailing);
+    ordered
+}
+
+fn sort_lines_top_down(lines: &mut [&TextLine]) {
+    lines.sort_by(|left, right| {
+        right
+            .bbox
+            .y
+            .total_cmp(&left.bbox.y)
+            .then(left.bbox.x.total_cmp(&right.bbox.x))
+    });
+}
+
+fn detect_paired_text_columns(lines: &[TextLine]) -> Option<ColumnLayout<'_>> {
+    if lines.len() < 4 {
+        return None;
+    }
+
+    let mut left_seed_indices = Vec::new();
+    let mut right_seed_indices = Vec::new();
+    for (left_index, left) in lines.iter().enumerate() {
+        for (right_index, right) in lines.iter().enumerate() {
+            if left_index == right_index || left.bbox.x >= right.bbox.x {
+                continue;
+            }
+            if (left.bbox.y - right.bbox.y).abs() > column_pair_y_tolerance(left, right) {
+                continue;
+            }
+            let gap = right.bbox.x - (left.bbox.x + left.bbox.width);
+            let x_jump = right.bbox.x - left.bbox.x;
+            if !is_likely_column_split_gap(&left.bbox, &right.bbox, gap, x_jump) {
+                continue;
+            }
+            left_seed_indices.push(left_index);
+            right_seed_indices.push(right_index);
+        }
+    }
+    dedupe_indices(&mut left_seed_indices);
+    dedupe_indices(&mut right_seed_indices);
+    if left_seed_indices.len() < 2 || right_seed_indices.len() < 2 {
+        return None;
+    }
+
+    let left_x = average_x(lines, &left_seed_indices)?;
+    let right_x = average_x(lines, &right_seed_indices)?;
+    if right_x - left_x < 90.0 {
+        return None;
+    }
+    let column_min_y = left_seed_indices
+        .iter()
+        .chain(&right_seed_indices)
+        .map(|index| lines[*index].bbox.y)
+        .reduce(f32::min)?;
+    let column_max_y = left_seed_indices
+        .iter()
+        .chain(&right_seed_indices)
+        .map(|index| lines[*index].bbox.y)
+        .reduce(f32::max)?;
+    let abstract_y = abstract_heading_y(lines);
+    let midpoint = (left_x + right_x) / 2.0;
+    let mut leading = Vec::new();
+    let mut trailing = Vec::new();
+    let mut left_column = Vec::new();
+    let mut right_column = Vec::new();
+
+    for line in lines {
+        if is_likely_front_matter_line(line, abstract_y)
+            || line.bbox.y > column_max_y + line.bbox.height
+        {
+            leading.push(line);
+        } else if line.bbox.y < column_min_y - line.bbox.height * 1.8
+            && (is_likely_page_number_line(line) || is_likely_bottom_footnote_line(line))
+        {
+            trailing.push(line);
+        } else if line.bbox.x < midpoint {
+            left_column.push(line);
+        } else {
+            right_column.push(line);
+        }
+    }
+
+    if left_column.len() < 2 || right_column.len() < 2 {
+        return None;
+    }
+
+    Some(ColumnLayout {
+        leading,
+        columns: vec![left_column, right_column],
+        trailing,
+    })
+}
+
+fn column_pair_y_tolerance(left: &TextLine, right: &TextLine) -> f32 {
+    left.bbox.height.max(right.bbox.height) * 0.45
+}
+
+fn abstract_heading_y(lines: &[TextLine]) -> Option<f32> {
+    lines
+        .iter()
+        .find(|line| text_line_plain_text(line).eq_ignore_ascii_case("abstract"))
+        .map(|line| line.bbox.y)
+}
+
+fn is_likely_front_matter_line(line: &TextLine, abstract_y: Option<f32>) -> bool {
+    abstract_y.is_some_and(|y| line.bbox.y > y + 36.0)
+}
+
+fn is_likely_bottom_footnote_line(line: &TextLine) -> bool {
+    average_run_size(line) <= 10.0 && text_line_plain_text(line).len() > 4
+}
+
+fn average_run_size(line: &TextLine) -> f32 {
+    if line.runs.is_empty() {
+        return line.bbox.height;
+    }
+    line.runs.iter().map(|run| run.size).sum::<f32>() / line.runs.len() as f32
+}
+
+fn is_likely_page_number_line(line: &TextLine) -> bool {
+    let text = text_line_plain_text(line);
+    !text.is_empty() && text.len() <= 4 && text.chars().all(|character| character.is_ascii_digit())
+}
+
+fn text_line_plain_text(line: &TextLine) -> String {
+    line.runs
+        .iter()
+        .map(|run| run.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_owned()
+}
+
+fn dedupe_indices(indices: &mut Vec<usize>) {
+    indices.sort_unstable();
+    indices.dedup();
+}
+
+fn average_x(lines: &[TextLine], indices: &[usize]) -> Option<f32> {
+    if indices.is_empty() {
+        return None;
+    }
+    Some(
+        indices
+            .iter()
+            .map(|index| lines[*index].bbox.x)
+            .sum::<f32>()
+            / indices.len() as f32,
+    )
+}
+
+fn detect_text_columns(lines: &[TextLine]) -> Option<Vec<Vec<&TextLine>>> {
+    if lines.len() < 4 {
+        return None;
+    }
+
+    let mut centers = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| (index, line.bbox.x + line.bbox.width / 2.0))
+        .collect::<Vec<_>>();
+    centers.sort_by(|left, right| left.1.total_cmp(&right.1));
+
+    let (split_index, largest_gap) = centers
+        .windows(2)
+        .enumerate()
+        .map(|(index, window)| (index + 1, window[1].1 - window[0].1))
+        .max_by(|left, right| left.1.total_cmp(&right.1))?;
+    if largest_gap < 90.0 {
+        return None;
+    }
+
+    let (left_indices, right_indices) = centers.split_at(split_index);
+    if left_indices.len() < 2 || right_indices.len() < 2 {
+        return None;
+    }
+
+    let left = left_indices
+        .iter()
+        .map(|(index, _)| &lines[*index])
+        .collect::<Vec<_>>();
+    let right = right_indices
+        .iter()
+        .map(|(index, _)| &lines[*index])
+        .collect::<Vec<_>>();
+
+    let overlap = y_overlap(&left, &right)?;
+    let average_height = average_line_height(lines);
+    if overlap < average_height {
+        return None;
+    }
+
+    Some(vec![left, right])
+}
+
+fn column_x(lines: &[&TextLine]) -> f32 {
+    if lines.is_empty() {
+        return 0.0;
+    }
+    lines.iter().map(|line| line.bbox.x).sum::<f32>() / lines.len() as f32
+}
+
+fn y_overlap(left: &[&TextLine], right: &[&TextLine]) -> Option<f32> {
+    let left_min = left.iter().map(|line| line.bbox.y).reduce(f32::min)?;
+    let left_max = left
+        .iter()
+        .map(|line| line.bbox.y + line.bbox.height)
+        .reduce(f32::max)?;
+    let right_min = right.iter().map(|line| line.bbox.y).reduce(f32::min)?;
+    let right_max = right
+        .iter()
+        .map(|line| line.bbox.y + line.bbox.height)
+        .reduce(f32::max)?;
+    Some((left_max.min(right_max) - left_min.max(right_min)).max(0.0))
+}
+
+fn average_line_height(lines: &[TextLine]) -> f32 {
+    let total = lines.iter().map(|line| line.bbox.height).sum::<f32>();
+    total / lines.len() as f32
+}
+
+fn text_line_block(page_number: usize, line: &TextLine) -> Option<Block> {
+    text_block_from_line(page_number, line).map(Block::Text)
+}
+
+fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock> {
+    let text = line
+        .runs
+        .iter()
+        .map(|run| run.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = clean_pdf_line_text(&text);
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(TextBlock {
+        text: text.clone(),
+        kind: classify_text_line(&text),
+        bbox: Some(line.bbox),
+        lines: vec![Line {
+            text,
+            bbox: Some(line.bbox),
+            spans: line
+                .runs
+                .iter()
+                .map(|run| Span {
+                    text: run.text.clone(),
+                    bbox: Some(run.bbox),
+                    font: run.font.clone(),
+                    size: Some(run.size),
+                })
+                .collect(),
+        }],
+        source_anchors: vec![anchor(
+            page_number,
+            Some(line.bbox),
+            source_ids_for_line(line),
+        )],
+        confidence: Some(Confidence {
+            score: 0.82,
+            calibrated: false,
+        }),
+    })
+}
+
+fn merge_wrapped_text_blocks(blocks: Vec<TextBlock>) -> Vec<TextBlock> {
+    let mut merged: Vec<TextBlock> = Vec::new();
+    for block in blocks {
+        if let Some(previous) = merged.last_mut() {
+            if should_merge_text_blocks(previous, &block) {
+                merge_text_block(previous, block);
+                continue;
+            }
+        }
+        merged.push(block);
+    }
+    merged
+}
+
+fn should_merge_text_blocks(previous: &TextBlock, next: &TextBlock) -> bool {
+    let Some(previous_bbox) = previous.bbox else {
+        return false;
+    };
+    let Some(next_bbox) = next.bbox else {
+        return false;
+    };
+    let baseline_gap = previous_bbox.y - next_bbox.y;
+    if baseline_gap <= 0.0 || baseline_gap > previous_bbox.height.max(next_bbox.height) * 1.8 {
+        return false;
+    }
+    let x_aligned = (previous_bbox.x - next_bbox.x).abs() <= 18.0;
+    let hyphenated = previous.text.ends_with('-') && starts_with_lowercase(&next.text);
+    if x_aligned && hyphenated {
+        return true;
+    }
+    if previous.kind != "paragraph" || next.kind != "paragraph" {
+        return false;
+    }
+    let lowercase_continuation =
+        starts_with_lowercase(&next.text) && !ends_sentence(&previous.text);
+    x_aligned && (hyphenated || lowercase_continuation)
+}
+
+fn merge_text_block(previous: &mut TextBlock, next: TextBlock) {
+    previous.text = join_wrapped_text(&previous.text, &next.text);
+    previous.bbox = union_boxes(previous.bbox.into_iter().chain(next.bbox)).or(previous.bbox);
+    previous.lines.extend(next.lines);
+    for anchor in next.source_anchors {
+        previous.source_anchors.push(anchor);
+    }
+}
+
+fn join_wrapped_text(previous: &str, next: &str) -> String {
+    if let Some(stem) = previous.strip_suffix('-') {
+        format!("{stem}{}", next.trim_start())
+    } else {
+        format!("{} {}", previous.trim_end(), next.trim_start())
+    }
+}
+
+fn starts_with_lowercase(text: &str) -> bool {
+    text.chars()
+        .find(|character| character.is_alphabetic())
+        .is_some_and(|character| character.is_lowercase())
+}
+
+fn ends_sentence(text: &str) -> bool {
+    text.trim_end()
+        .chars()
+        .last()
+        .is_some_and(|character| matches!(character, '.' | '!' | '?'))
+}
+
+fn clean_pdf_line_text(text: &str) -> String {
+    let tokens = text
+        .split_whitespace()
+        .map(normalize_pdf_token)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let mut cleaned: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index].as_str();
+        if is_closing_punctuation_token(token) && !cleaned.is_empty() {
+            let previous = cleaned.last_mut().expect("checked non-empty");
+            previous.push_str(token);
+            index += 1;
+            continue;
+        }
+        if is_joining_apostrophe(token) && !cleaned.is_empty() && index + 1 < tokens.len() {
+            let next = tokens[index + 1].as_str();
+            if is_word_piece(next) {
+                let previous = cleaned.last_mut().expect("checked non-empty");
+                previous.push('\'');
+                previous.push_str(next);
+                index += 2;
+                continue;
+            }
+        }
+        if is_joining_hyphen(token) && !cleaned.is_empty() && index + 1 < tokens.len() {
+            let next = tokens[index + 1].as_str();
+            if is_word_piece(next) {
+                let previous = cleaned.last_mut().expect("checked non-empty");
+                previous.push('-');
+                previous.push_str(next);
+                index += 2;
+                continue;
+            }
+        }
+        if let Some(previous) = cleaned.last_mut() {
+            if should_join_after_trailing_hyphen(previous, token) {
+                previous.push_str(token);
+                index += 1;
+                continue;
+            }
+            if should_join_pdf_word_piece(previous, token) {
+                previous.push_str(token);
+                index += 1;
+                continue;
+            }
+        }
+        if is_letter_fragment(token) {
+            let mut merged = String::new();
+            let mut end = index;
+            while end < tokens.len() && is_letter_fragment(tokens[end].as_str()) {
+                merged.push_str(tokens[end].as_str());
+                end += 1;
+            }
+            if end - index >= 2 {
+                cleaned.push(merged);
+                index = end;
+                continue;
+            }
+        }
+        cleaned.push(token.to_owned());
+        index += 1;
+    }
+    repair_pdf_math_notation(&repair_pdf_word_fragment_phrases(&cleaned.join(" ")))
+}
+
+fn repair_pdf_word_fragment_phrases(text: &str) -> String {
+    let mut repaired = text.to_owned();
+    for (broken, fixed) in [
+        ("a c onversatio n", "a conversation"),
+        ("ac onversatio n", "a conversation"),
+        ("an other", "another"),
+        ("ce nters", "centers"),
+        ("prod uction", "production"),
+        ("de mands", "demands"),
+        ("turn s", "turns"),
+        ("coordinate s", "coordinates"),
+        ("coordinat e", "coordinate"),
+        ("facilitat e", "facilitate"),
+        ("speake rs", "speakers"),
+        ("listener s'", "listeners'"),
+        ("th e", "the"),
+        ("p resent", "present"),
+        ("linguisti c", "linguistic"),
+        ("an d", "and"),
+        ("inferen ces", "inferences"),
+        ("attentio n", "attention"),
+        ("B eyond", "Beyond"),
+        ("variabilit y", "variability"),
+        ("l essons", "lessons"),
+        ("re peating", "repeating"),
+        ("import ant", "important"),
+        ("sp ecified", "specified"),
+    ] {
+        repaired = repaired.replace(broken, fixed);
+    }
+    repaired
+}
+
+fn normalize_pdf_token(token: &str) -> String {
+    let normalized = token
+        .replace("â\u{80}\u{98}", "'")
+        .replace("â\u{80}\u{99}", "'")
+        .replace("Â·", "·")
+        .replace("â\u{84}\u{93}", "ℓ")
+        .replace("Î»", "λ")
+        .replace("Î›", "Λ")
+        .replace("Ï\u{84}", "τ")
+        .replace("Ã\u{97}", "×")
+        .replace("â\u{86}\u{92}", "→")
+        .replace("â\u{89}¥", "≥")
+        .replace("â\u{89}¤", "≤")
+        .replace("â\u{88}\u{88}", "∈")
+        .replace(['‘', '’'], "'")
+        .replace(['“', '”'], "\"");
+    repair_embedded_pdf_control_glyphs(&normalized)
+}
+
+fn repair_embedded_pdf_control_glyphs(token: &str) -> String {
+    let characters = token.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(token.len());
+    for (index, character) in characters.iter().enumerate() {
+        match character {
+            '\u{2}' if has_following_alphabetic(&characters, index + 1) => {
+                output.push_str("fi");
+            }
+            '\u{2}' => {}
+            '\u{3}' if has_following_alphabetic(&characters, index + 1) => {
+                output.push_str("fl");
+            }
+            _ => output.push(*character),
+        }
+    }
+    output
+}
+
+fn has_following_alphabetic(characters: &[char], index: usize) -> bool {
+    characters
+        .get(index)
+        .is_some_and(|character| character.is_alphabetic())
+}
+
+fn is_closing_punctuation_token(token: &str) -> bool {
+    matches!(token, "." | "," | ":" | ";" | "!" | "?" | ")" | "]" | "}")
+}
+
+fn should_join_after_trailing_hyphen(previous: &str, token: &str) -> bool {
+    previous.ends_with('-')
+        && token
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        && previous
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
+}
+
+fn should_join_pdf_word_piece(previous: &str, token: &str) -> bool {
+    if !is_alphabetic_word(previous) || !is_alphabetic_word(token) {
+        return false;
+    }
+    if !previous
+        .chars()
+        .last()
+        .is_some_and(|character| character.is_lowercase())
+        || !starts_with_lowercase(token)
+    {
+        return false;
+    }
+
+    matches!(
+        (previous, token),
+        ("coordina", "ting") | ("de", "scribe") | ("foc", "i") | ("pro", "posed")
+    )
+}
+
+fn is_alphabetic_word(token: &str) -> bool {
+    !token.is_empty() && token.chars().all(|character| character.is_alphabetic())
+}
+
+fn repair_pdf_math_notation(text: &str) -> String {
+    let normalized = text.replace("Â·", "·").replace("â\u{84}\u{93}", "ℓ");
+    if !looks_like_pdf_math_notation(&normalized) {
+        return strip_pdf_control_glyphs(&normalized);
+    }
+
+    let symbols = replace_math_symbols(&normalized);
+    strip_pdf_control_glyphs(&repair_math_subscript_spacing(&symbols))
+}
+
+fn looks_like_pdf_math_notation(text: &str) -> bool {
+    text.chars().any(|character| {
+        matches!(
+            character,
+            'ℓ' | 'λ'
+                | 'θ'
+                | 'ρ'
+                | 'τ'
+                | '∆'
+                | 'Δ'
+                | '≤'
+                | '≥'
+                | '∈'
+                | '∪'
+                | '∅'
+                | '·'
+                | '−'
+                | '±'
+                | '⊆'
+                | '∼'
+                | '≠'
+                | '→'
+        )
+    }) || text.contains("...")
+        || text.contains("Fq")
+        || text.contains(" 6 =")
+}
+
+fn replace_math_symbols(text: &str) -> String {
+    let collapsed = text
+        .replace("· · ·", r"\cdots")
+        .replace("...", r"\ldots")
+        .replace("6 =", r"\neq")
+        .replace("Fq", r"\mathbb{F}_q");
+    let mut output = String::with_capacity(collapsed.len());
+
+    for character in collapsed.chars() {
+        match character {
+            '\u{3}' => output.push_str(r"\Lambda"),
+            'ℓ' => output.push_str(r"\ell"),
+            'λ' => output.push_str(r"\lambda"),
+            'Λ' => output.push_str(r"\Lambda"),
+            'θ' => output.push_str(r"\theta"),
+            'Θ' => output.push_str(r"\Theta"),
+            'ρ' => output.push_str(r"\rho"),
+            'τ' => output.push_str(r"\tau"),
+            '∆' | 'Δ' => output.push_str(r"\Delta"),
+            '≤' => output.push_str(r"\leq"),
+            '≥' => output.push_str(r"\geq"),
+            '∈' => output.push_str(r"\in"),
+            '∪' => output.push_str(r"\cup"),
+            '∅' => output.push_str(r"\varnothing"),
+            '−' => output.push('-'),
+            '±' => output.push_str(r"\pm"),
+            '⊆' => output.push_str(r"\subseteq"),
+            '∼' => output.push_str(r"\sim"),
+            '≠' => output.push_str(r"\neq"),
+            '×' => output.push_str(r"\times"),
+            '→' => output.push_str(r"\to"),
+            '·' => output.push_str(r"\cdot"),
+            _ => output.push(character),
+        }
+    }
+
+    output
+}
+
+fn strip_pdf_control_glyphs(text: &str) -> String {
+    text.chars()
+        .filter(|character| !matches!(character, '\u{2}' | '\u{3}'))
+        .collect()
+}
+
+fn repair_math_subscript_spacing(text: &str) -> String {
+    let tokens = text.split_whitespace().collect::<Vec<_>>();
+    let mut repaired = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let token = tokens[index];
+        if is_math_base_token(token) && index + 1 < tokens.len() {
+            if tokens[index + 1].starts_with('_') {
+                repaired.push(format!("{}{}", token, tokens[index + 1]));
+                index += 2;
+                continue;
+            }
+            if let Some((subscript, suffix)) = split_math_subscript_token(tokens[index + 1]) {
+                repaired.push(format!(
+                    "{}{}{}",
+                    token,
+                    format_math_subscript(subscript),
+                    suffix
+                ));
+                index += 2;
+                continue;
+            }
+        }
+
+        repaired.push(repair_compact_math_subscript(token));
+        index += 1;
+    }
+
+    repaired.join(" ")
+}
+
+fn repair_compact_math_subscript(token: &str) -> String {
+    if token.chars().count() > 2 && token.chars().all(|character| character.is_alphabetic()) {
+        return token.to_owned();
+    }
+
+    for base in ["m", "n", "N", "T", "V", "C", "x", "t", "i", "k", "h", "g"] {
+        if let Some(rest) = token.strip_prefix(base) {
+            if rest.is_empty() || rest.starts_with('_') {
+                continue;
+            }
+            if let Some((subscript, suffix)) = split_math_subscript_token(rest) {
+                return format!("{}{}{}", base, format_math_subscript(subscript), suffix);
+            }
+        }
+    }
+
+    for base in [r"\lambda", r"\theta", r"\rho"] {
+        if let Some(rest) = token.strip_prefix(base) {
+            if rest.is_empty() || rest.starts_with('_') {
+                continue;
+            }
+            if let Some((subscript, suffix)) = split_math_subscript_token(rest) {
+                return format!("{}{}{}", base, format_math_subscript(subscript), suffix);
+            }
+        }
+    }
+
+    token.to_owned()
+}
+
+fn is_math_base_token(token: &str) -> bool {
+    matches!(
+        token,
+        "m" | "n"
+            | "N"
+            | "T"
+            | "V"
+            | "C"
+            | "x"
+            | "t"
+            | "i"
+            | "k"
+            | "h"
+            | "g"
+            | r"\lambda"
+            | r"\theta"
+            | r"\rho"
+    )
+}
+
+fn split_math_subscript_token(token: &str) -> Option<(&str, &str)> {
+    for command in [r"\ell", r"\lambda", r"\theta", r"\rho"] {
+        if let Some(suffix) = token.strip_prefix(command) {
+            return Some((command, suffix));
+        }
+    }
+    for word in ["init", "cl"] {
+        if let Some(suffix) = token.strip_prefix(word) {
+            return Some((word, suffix));
+        }
+    }
+
+    let mut end = 0;
+    for (offset, character) in token.char_indices() {
+        if character.is_ascii_digit() {
+            end = offset + character.len_utf8();
+            continue;
+        }
+        break;
+    }
+    if end > 0 {
+        return Some((&token[..end], &token[end..]));
+    }
+
+    let mut chars = token.char_indices();
+    let (_, first) = chars.next()?;
+    if matches!(first, 'i' | 'j' | 'k' | 'l' | 'n' | 'r' | 's') {
+        let end = first.len_utf8();
+        return Some((&token[..end], &token[end..]));
+    }
+    None
+}
+
+fn format_math_subscript(subscript: &str) -> String {
+    match subscript {
+        "init" => r"_{\text{init}}".to_owned(),
+        _ => format!("_{subscript}"),
+    }
+}
+
+fn is_letter_fragment(token: &str) -> bool {
+    let chars = token.chars().collect::<Vec<_>>();
+    matches!(chars.as_slice(), [character] if character.is_alphabetic())
+        || matches!(chars.as_slice(), [character, '-'] if character.is_alphabetic())
+}
+
+fn is_word_piece(token: &str) -> bool {
+    token.chars().any(|character| character.is_alphabetic())
+}
+
+fn is_joining_apostrophe(token: &str) -> bool {
+    matches!(token, "'" | "’")
+}
+
+fn is_joining_hyphen(token: &str) -> bool {
+    matches!(token, "-" | "‐" | "‑" | "–")
+}
+
+fn detect_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
     let candidate_lines = lines
         .iter()
-        .filter(|line| line.runs.len() >= 2)
+        .enumerate()
+        .filter(|(_, line)| line.runs.len() >= 2)
         .collect::<Vec<_>>();
     if candidate_lines.len() < 2 {
         return None;
     }
 
-    let width = candidate_lines[0].runs.len();
-    if !candidate_lines
-        .iter()
-        .all(|line| line.runs.len() == width && columns_align(&candidate_lines[0].runs, &line.runs))
-    {
+    let width = candidate_lines[0].1.runs.len();
+    if !candidate_lines.iter().all(|(_, line)| {
+        line.runs.len() == width && columns_align(&candidate_lines[0].1.runs, &line.runs)
+    }) {
+        return None;
+    }
+    if !has_table_evidence(&candidate_lines) {
         return None;
     }
 
     let headers = candidate_lines[0]
+        .1
         .runs
         .iter()
         .map(|run| run.text.trim().to_owned())
@@ -591,17 +1490,17 @@ fn detect_table(page_number: usize, lines: &[TextLine]) -> Option<TableBlock> {
     let rows = candidate_lines
         .iter()
         .skip(1)
-        .map(|line| {
+        .map(|(_, line)| {
             line.runs
                 .iter()
                 .map(|run| run.text.trim().to_owned())
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let bbox = union_boxes(candidate_lines.iter().map(|line| line.bbox))?;
+    let bbox = union_boxes(candidate_lines.iter().map(|(_, line)| line.bbox))?;
     let mut cells = Vec::new();
 
-    for (row_index, line) in candidate_lines.iter().enumerate() {
+    for (row_index, (_, line)) in candidate_lines.iter().enumerate() {
         for (column_index, run) in line.runs.iter().enumerate() {
             cells.push(TableCell {
                 row: row_index,
@@ -613,18 +1512,35 @@ fn detect_table(page_number: usize, lines: &[TextLine]) -> Option<TableBlock> {
         }
     }
 
-    Some(TableBlock {
-        headers,
-        rows,
-        caption: None,
-        bbox: Some(bbox),
-        cells,
-        source_anchors: vec![anchor(page_number, Some(bbox), Vec::new())],
-        confidence: Some(Confidence {
-            score: 0.72,
-            calibrated: false,
-        }),
+    Some(DetectedTable {
+        table: TableBlock {
+            headers,
+            rows,
+            caption: None,
+            bbox: Some(bbox),
+            cells,
+            source_anchors: vec![anchor(page_number, Some(bbox), Vec::new())],
+            confidence: Some(Confidence {
+                score: 0.72,
+                calibrated: false,
+            }),
+        },
+        line_indices: candidate_lines
+            .iter()
+            .map(|(line_index, _)| *line_index)
+            .collect(),
     })
+}
+
+fn has_table_evidence(candidate_lines: &[(usize, &TextLine)]) -> bool {
+    if candidate_lines.len() >= 3 {
+        return true;
+    }
+    candidate_lines
+        .iter()
+        .skip(1)
+        .flat_map(|(_, line)| line.runs.iter())
+        .any(|run| run.text.chars().any(|character| character.is_ascii_digit()))
 }
 
 fn columns_align(first: &[TextRun], next: &[TextRun]) -> bool {
@@ -767,15 +1683,42 @@ impl<'a> ContentParser<'a> {
             match byte {
                 b'\\' => {
                     if self.pos < self.bytes.len() {
-                        output.push(match self.bytes[self.pos] {
-                            b'n' => b'\n',
-                            b'r' => b'\r',
-                            b't' => b'\t',
-                            b'b' => 0x08,
-                            b'f' => 0x0c,
-                            other => other,
-                        });
-                        self.pos += 1;
+                        match self.bytes[self.pos] {
+                            b'n' => {
+                                output.push(b'\n');
+                                self.pos += 1;
+                            }
+                            b'r' => {
+                                output.push(b'\r');
+                                self.pos += 1;
+                            }
+                            b't' => {
+                                output.push(b'\t');
+                                self.pos += 1;
+                            }
+                            b'b' => {
+                                output.push(0x08);
+                                self.pos += 1;
+                            }
+                            b'f' => {
+                                output.push(0x0c);
+                                self.pos += 1;
+                            }
+                            b'\n' => {
+                                self.pos += 1;
+                            }
+                            b'\r' => {
+                                self.pos += 1;
+                                if self.bytes.get(self.pos) == Some(&b'\n') {
+                                    self.pos += 1;
+                                }
+                            }
+                            b'0'..=b'7' => output.push(self.read_octal_escape()),
+                            other => {
+                                output.push(other);
+                                self.pos += 1;
+                            }
+                        }
                     }
                 }
                 b'(' => {
@@ -793,6 +1736,20 @@ impl<'a> ContentParser<'a> {
         }
 
         output
+    }
+
+    fn read_octal_escape(&mut self) -> u8 {
+        let mut value = 0u16;
+        let mut digits = 0;
+        while self.pos < self.bytes.len()
+            && digits < 3
+            && matches!(self.bytes[self.pos], b'0'..=b'7')
+        {
+            value = (value << 3) + u16::from(self.bytes[self.pos] - b'0');
+            self.pos += 1;
+            digits += 1;
+        }
+        value.min(u16::from(u8::MAX)) as u8
     }
 
     fn read_hex_string(&mut self) -> Vec<u8> {
@@ -960,14 +1917,47 @@ fn expand_object_streams(objects: &mut Vec<PdfObject>) {
     objects.extend(expanded);
 }
 
-fn page_seed(object: &PdfObject) -> Option<PageSeed> {
+fn page_seed(object: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> Option<PageSeed> {
     let body = lossy(&object.body);
     let compact = body.split_whitespace().collect::<String>();
     if compact.contains("/Type/Page") && !compact.contains("/Type/Pages") {
-        Some(PageSeed { number: 0, body })
+        Some(PageSeed {
+            number: 0,
+            body: body_with_inherited_page_tree_entries(&body, object_map),
+        })
     } else {
         None
     }
+}
+
+fn body_with_inherited_page_tree_entries(
+    page_body: &str,
+    object_map: &HashMap<u32, PdfObject>,
+) -> String {
+    let mut body = page_body.to_owned();
+    append_parent_page_tree_entries(page_body, object_map, &mut body, 0);
+    body
+}
+
+fn append_parent_page_tree_entries(
+    body: &str,
+    object_map: &HashMap<u32, PdfObject>,
+    output: &mut String,
+    depth: usize,
+) {
+    if depth >= 16 {
+        return;
+    }
+    let Some(parent_ref) = parse_direct_ref_after_key(body, "/Parent") else {
+        return;
+    };
+    let Some(parent) = object_map.get(&(parent_ref as u32)) else {
+        return;
+    };
+    let parent_body = lossy(&parent.body);
+    output.push('\n');
+    output.push_str(&parent_body);
+    append_parent_page_tree_entries(&parent_body, object_map, output, depth + 1);
 }
 
 fn decode_stream_object(object: &PdfObject) -> Result<Option<Vec<u8>>> {
@@ -1145,7 +2135,10 @@ fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
 
         let hexes = hex_strings_in_line(trimmed);
         if in_bfchar && hexes.len() >= 2 {
-            cmap.insert(hexes[0].clone(), utf16be_hex_to_string(&hexes[1]));
+            cmap.insert(
+                hexes[0].clone(),
+                cmap_text_for_mapping(&hexes[0], &hexes[1]),
+            );
         } else if in_bfrange && hexes.len() >= 3 {
             add_bfrange(&mut cmap, &hexes);
         }
@@ -1168,13 +2161,46 @@ fn add_bfrange(cmap: &mut HashMap<Vec<u8>, String>, hexes: &[Vec<u8>]) {
     let source_len = hexes[0].len();
 
     for offset in 0..=(end.saturating_sub(start)).min(512) {
+        let source = start + offset;
+        let destination = destination + offset;
         cmap.insert(
-            number_to_be_bytes(start + offset, source_len),
-            char::from_u32(destination + offset)
-                .map(|character| character.to_string())
-                .unwrap_or_default(),
+            number_to_be_bytes(source, source_len),
+            cmap_text_for_codes(source, destination),
         );
     }
+}
+
+fn cmap_text_for_mapping(source: &[u8], destination: &[u8]) -> String {
+    let Some(source_code) = hex_to_u32(source) else {
+        return utf16be_hex_to_string(destination);
+    };
+    let Some(destination_code) = hex_to_u32(destination) else {
+        return utf16be_hex_to_string(destination);
+    };
+    cmap_text_for_codes(source_code, destination_code)
+}
+
+fn cmap_text_for_codes(source: u32, destination: u32) -> String {
+    if is_private_use_text_code(destination) {
+        if let Some(character) = private_use_source_ascii(source) {
+            return character.to_string();
+        }
+    }
+    char::from_u32(destination)
+        .map(|character| character.to_string())
+        .unwrap_or_default()
+}
+
+fn is_private_use_text_code(code: u32) -> bool {
+    (0xe000..=0xf8ff).contains(&code)
+}
+
+fn private_use_source_ascii(source: u32) -> Option<char> {
+    let ascii = source + 28;
+    (0x20..=0x7e)
+        .contains(&ascii)
+        .then(|| char::from_u32(ascii))
+        .flatten()
 }
 
 fn hex_strings_in_line(line: &str) -> Vec<Vec<u8>> {

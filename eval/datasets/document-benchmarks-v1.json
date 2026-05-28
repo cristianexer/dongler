@@ -17,7 +17,7 @@
         "reason": "full image corpus is large; enable manually if layout-image benchmarking is needed"
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "layout_accuracy_if_aligned_ground_truth"],
-      "notes": "Human-annotated, diverse document pages; current Dongler native engine only evaluates PDFs found locally."
+      "notes": "Human-annotated, diverse document pages; native eval uses local PDFs, COCO JSON layout annotations, image metadata, or supported documents when available."
     },
     {
       "name": "PubLayNet",
@@ -31,7 +31,7 @@
         "reason": "full dataset is hundreds of thousands of page images"
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "layout_accuracy_if_aligned_ground_truth"],
-      "notes": "Large PMC-derived scientific layout benchmark."
+      "notes": "Large PMC-derived scientific layout benchmark; local COCO JSON annotations are supported when installed."
     },
     {
       "name": "DocBank",
@@ -46,7 +46,7 @@
         "max_bytes": 1073741824
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "token_label_accuracy_if_aligned_ground_truth"],
-      "notes": "Repository clone gives tooling/index/sample material without mirroring the full corpus."
+      "notes": "Repository clone gives tooling/index/sample material without mirroring the full corpus; native token-label text annotations extract words, labels, and boxes when PDFs are absent."
     },
     {
       "name": "PubTabNet",
@@ -60,7 +60,7 @@
         "reason": "full table-image corpus is large and not native-PDF aligned"
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "teds_if_aligned_ground_truth"],
-      "notes": "Useful for table structure, but requires image/table-render evaluation not implemented in native v1."
+      "notes": "Native JSONL table structure annotations extract HTML-style rows, cells, and non-empty cell boxes when installed locally."
     },
     {
       "name": "PubTables-1M",
@@ -75,7 +75,7 @@
         "reason": "requires generated Microsoft Research Open Data Azure URL"
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "grits_if_aligned_ground_truth"],
-      "notes": "Supports GriTS-style scoring when official data is installed locally."
+      "notes": "Supports GriTS-style scoring when official data is installed locally; native XML, grid-cell JSON, and word-box JSON extraction read table boxes and text."
     },
     {
       "name": "TableBank",
@@ -90,7 +90,7 @@
         "max_bytes": 1073741824
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "table_accuracy_if_aligned_ground_truth"],
-      "notes": "Repository clone gives metadata/tooling without full weakly supervised corpus mirroring."
+      "notes": "Repository clone gives sampled table images; native image-page blocks preserve full-image geometry and anchors when PDFs are absent."
     },
     {
       "name": "FUNSD",
@@ -106,7 +106,7 @@
         "max_bytes": 1073741824
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "form_ocr_accuracy_if_ocr_enabled"],
-      "notes": "Small OCR/form benchmark; native Dongler currently records image-only datasets as non-PDF coverage."
+      "notes": "Small OCR/form benchmark; native JSON form annotations, Tesseract TSV, ALTO XML, PAGE XML, and hOCR HTML extract OCR text and boxes, with image metadata as fallback."
     },
     {
       "name": "SROIE",
@@ -121,7 +121,7 @@
         "max_bytes": 5368709120
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "receipt_ocr_accuracy_if_ocr_enabled"],
-      "notes": "Scanned receipt benchmark; useful after OCR/image ingestion lands."
+      "notes": "Scanned receipt benchmark; native CSV OCR boxes, Tesseract TSV, ALTO XML, PAGE XML, and hOCR HTML extract receipt text and geometry, with image metadata as fallback."
     },
     {
       "name": "RVL-CDIP",
@@ -135,7 +135,7 @@
         "reason": "large image classification corpus; routing benchmark, not structure extraction"
       },
       "metrics": ["routing_accuracy_if_classifier_enabled"],
-      "notes": "Useful for future routing/classification, not current PDF structure extraction."
+      "notes": "Useful for future routing/classification; native image-page blocks preserve TIFF geometry and anchors when installed locally."
     },
     {
       "name": "READoc",
@@ -145,11 +145,13 @@
       "local_dir": "readoc",
       "modality": "PDF-to-Markdown structured extraction",
       "download": {
-        "kind": "disabled",
-        "reason": "license/tooling must be validated before automatic mirroring"
+        "kind": "hf",
+        "repo": "lazyc/READoc",
+        "include": ["github_ground_truth/*.md", "arxiv_ground_truth/*.md"],
+        "max_bytes": 1073741824
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "markdown_similarity_if_targets_available"],
-      "notes": "Newer benchmark; kept opt-in until license and tooling are explicitly reviewed."
+      "notes": "MIT-licensed benchmark; default download is bounded to released Markdown ground-truth files, while native Markdown extraction preserves headings, tables, lists, and paragraphs."
     },
     {
       "name": "OmniDocBench",
@@ -165,7 +167,7 @@
         "max_bytes": 5368709120
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "pages_per_second", "markdown_similarity_if_targets_available"],
-      "notes": "Moderate-size modern PDF parsing benchmark suitable for local native-PDF smoke evaluation."
+      "notes": "Moderate-size modern parsing benchmark; native JSON annotations extract page text, tables, formulas, and boxes when PDFs are absent."
     },
     {
       "name": "olmOCR-Bench",
@@ -177,7 +179,7 @@
       "download": {
         "kind": "hf",
         "repo": "allenai/olmOCR-bench",
-        "include": ["*.yaml", "*.json", "**/*.pdf"],
+        "include": ["*.yaml", "bench_data/*.jsonl", "**/*.pdf"],
         "max_bytes": 21474836480
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "pages_per_second", "unit_pass_rate_if_olmocr_harness_enabled"],
@@ -196,7 +198,7 @@
         "max_bytes": 5368709120
       },
       "metrics": ["pdf_parse_success", "anchored_block_rate", "pages_per_second", "text_accuracy_if_targets_available"],
-      "notes": "Good native text, order, paragraph, and role benchmark when reference targets are present locally."
+      "notes": "Good native text, order, paragraph, and role benchmark; bundled text/HTML and feature-box TSV resources now exercise non-PDF fallback extraction."
     },
     {
       "name": "S2ORC",
@@ -210,7 +212,7 @@
         "reason": "very large corpus and not a direct PDF geometry benchmark"
       },
       "metrics": ["reference_text_similarity_if_aligned_pdfs_available"],
-      "notes": "Useful as text/reference comparison data, not direct PDF geometry truth."
+      "notes": "Useful as text/reference comparison data; JSON/JSONL and gzipped JSONL corpora are supported when installed locally."
     },
     {
       "name": "PMC OA",
@@ -224,7 +226,7 @@
         "reason": "article-level licenses vary; mirror subsets deliberately"
       },
       "metrics": ["pdf_parse_success", "xml_text_similarity_if_aligned_articles_available"],
-      "notes": "Licence varies by article, so automatic bulk download is disabled."
+      "notes": "Licence varies by article, so automatic bulk download is disabled; local XML/JATS files and zip/tar source packages are supported."
     },
     {
       "name": "arXiv source/PDF",
@@ -238,7 +240,7 @@
         "reason": "bulk source/PDF alignment requires careful licence and source mapping"
       },
       "metrics": ["pdf_parse_success", "latex_markdown_similarity_if_aligned_sources_available"],
-      "notes": "Keep opt-in; source/PDF alignment and licensing require explicit sampling."
+      "notes": "Keep opt-in; source/PDF alignment and licensing require explicit sampling; local TeX files and tar/tar.gz source packages are supported."
     }
   ]
 }

@@ -18,6 +18,12 @@ pub enum DonglerError {
 
     #[error("PDF error: {0}")]
     Pdf(String),
+
+    #[error("image error: {0}")]
+    Image(String),
+
+    #[error("archive error: {0}")]
+    Archive(String),
 }
 
 impl DonglerError {
@@ -29,5 +35,13 @@ impl DonglerError {
 
     pub fn pdf(message: impl Into<String>) -> Self {
         Self::Pdf(message.into())
+    }
+
+    pub fn image(message: impl Into<String>) -> Self {
+        Self::Image(message.into())
+    }
+
+    pub fn archive(message: impl Into<String>) -> Self {
+        Self::Archive(message.into())
     }
 }

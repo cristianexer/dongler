@@ -172,6 +172,7 @@ def main() -> int:
         "tablebank",
         "funsd",
         "sroie",
+        "readoc",
         "omnidocbench",
         "olmocr-bench",
         "ckorzen",

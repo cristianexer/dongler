@@ -73,6 +73,51 @@ def compile_latex(tex_path: Path, output_dir: Path) -> Path:
     return output_dir / f"{tex_path.stem}.pdf"
 
 
+def write_error_artifact(
+    output_dir: Path,
+    filename: str,
+    stage: str,
+    error: BaseException,
+) -> Path:
+    artifact = {
+        "stage": stage,
+        "error_type": error.__class__.__name__,
+        "message": str(error),
+    }
+    if isinstance(error, subprocess.CalledProcessError):
+        artifact["returncode"] = error.returncode
+        artifact["cmd"] = [str(part) for part in error.cmd]
+        artifact["stdout"] = error.stdout or error.output or ""
+        artifact["stderr"] = error.stderr or ""
+    path = output_dir / filename
+    path.write_text(json.dumps(artifact, indent=2, sort_keys=True))
+    return path
+
+
+def compile_latex_or_artifact(
+    tex_path: Path,
+    output_dir: Path,
+    stage: str,
+    error_filename: str,
+) -> tuple[Path | None, Path | None]:
+    try:
+        return compile_latex(tex_path, output_dir), None
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        return None, write_error_artifact(output_dir, error_filename, stage, error)
+
+
+def render_pdf_first_page_or_artifact(
+    pdf: Path,
+    output_prefix: Path,
+    stage: str,
+    error_filename: str,
+) -> tuple[Path | None, Path | None]:
+    try:
+        return render_pdf_first_page(pdf, output_prefix), None
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        return None, write_error_artifact(output_prefix.parent, error_filename, stage, error)
+
+
 def markdown_to_latex_document(markdown: str) -> str:
     blocks = markdown.splitlines()
     output = [
@@ -228,16 +273,60 @@ def main() -> int:
     }
 
     if document.suffix.lower() == ".pdf":
-        artifacts["original_png"] = str(render_pdf_first_page(document, out_dir / "original"))
+        original_png, original_error = render_pdf_first_page_or_artifact(
+            document,
+            out_dir / "original",
+            "source_pdf_render",
+            "original-render.error.json",
+        )
+        if original_png:
+            artifacts["original_png"] = str(original_png)
+        if original_error:
+            artifacts["original_render_error"] = str(original_error)
     elif document.suffix.lower() in IMAGE_SUFFIXES:
         original_image = out_dir / f"original{document.suffix.lower()}"
         shutil.copyfile(document, original_image)
         artifacts["original_image"] = str(original_image)
 
-    markdown_pdf = compile_latex(markdown_render_tex, out_dir)
-    latex_pdf = compile_latex(latex_path, out_dir)
-    artifacts["markdown_png"] = str(render_pdf_first_page(markdown_pdf, out_dir / "markdown"))
-    artifacts["latex_png"] = str(render_pdf_first_page(latex_pdf, out_dir / "latex"))
+    markdown_pdf, markdown_compile_error = compile_latex_or_artifact(
+        markdown_render_tex,
+        out_dir,
+        "markdown_latex_compile",
+        "extracted-markdown-render.error.json",
+    )
+    if markdown_compile_error:
+        artifacts["markdown_render_error"] = str(markdown_compile_error)
+    elif markdown_pdf:
+        markdown_png, markdown_render_error = render_pdf_first_page_or_artifact(
+            markdown_pdf,
+            out_dir / "markdown",
+            "markdown_pdf_render",
+            "markdown-render.error.json",
+        )
+        if markdown_png:
+            artifacts["markdown_png"] = str(markdown_png)
+        if markdown_render_error:
+            artifacts["markdown_render_error"] = str(markdown_render_error)
+
+    latex_pdf, latex_compile_error = compile_latex_or_artifact(
+        latex_path,
+        out_dir,
+        "latex_compile",
+        "extracted-latex.error.json",
+    )
+    if latex_compile_error:
+        artifacts["latex_render_error"] = str(latex_compile_error)
+    elif latex_pdf:
+        latex_png, latex_render_error = render_pdf_first_page_or_artifact(
+            latex_pdf,
+            out_dir / "latex",
+            "latex_pdf_render",
+            "latex-render.error.json",
+        )
+        if latex_png:
+            artifacts["latex_png"] = str(latex_png)
+        if latex_render_error:
+            artifacts["latex_render_error"] = str(latex_render_error)
 
     manifest_path = out_dir / "comparison.json"
     manifest_path.write_text(json.dumps(artifacts, indent=2, sort_keys=True))

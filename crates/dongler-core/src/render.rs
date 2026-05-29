@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::ir::{Block, Document, TableBlock, TextBlock};
+use crate::ir::{Block, Document, FigureBlock, TableBlock, TextBlock};
 
 pub trait Renderer {
     fn render(&self, document: &Document) -> Result<String>;
@@ -18,9 +18,7 @@ impl Renderer for MarkdownRenderer {
                     Block::Text(text) => rendered_blocks.push(render_markdown_text(text)),
                     Block::Table(table) => rendered_blocks.push(render_markdown_table(table)),
                     Block::Figure(figure) => {
-                        if let Some(caption) = &figure.caption {
-                            rendered_blocks.push(caption.clone());
-                        }
+                        rendered_blocks.push(render_markdown_figure(figure));
                     }
                 }
             }
@@ -58,10 +56,8 @@ impl Renderer for LatexRenderer {
                         output.push_str("\n\n");
                     }
                     Block::Figure(figure) => {
-                        if let Some(caption) = &figure.caption {
-                            output.push_str(&escape_latex(caption));
-                            output.push_str("\n\n");
-                        }
+                        output.push_str(&render_latex_figure(figure));
+                        output.push_str("\n\n");
                     }
                 }
             }
@@ -74,18 +70,22 @@ impl Renderer for LatexRenderer {
 
 fn render_markdown_text(text: &TextBlock) -> String {
     if let Some(level) = heading_level(&text.kind) {
-        return format!("{} {}", "#".repeat(level), text.text);
+        return format!(
+            "{} {}",
+            "#".repeat(level),
+            sanitize_markdown_text(&text.text)
+        );
     }
     if text.kind == "list" {
         return text
             .text
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| format!("- {}", line.trim()))
+            .map(|line| format!("- {}", sanitize_markdown_text(line.trim())))
             .collect::<Vec<_>>()
             .join("\n");
     }
-    text.text.clone()
+    sanitize_markdown_text(&text.text)
 }
 
 fn render_markdown_table(table: &TableBlock) -> String {
@@ -113,15 +113,55 @@ fn render_markdown_table(table: &TableBlock) -> String {
     lines.join("\n")
 }
 
+fn render_markdown_figure(figure: &FigureBlock) -> String {
+    let alt_text = figure
+        .alt_text
+        .as_deref()
+        .or(figure.caption.as_deref())
+        .or(figure.image_ref.as_deref())
+        .unwrap_or("image");
+    let image_ref = figure.image_ref.as_deref().unwrap_or("#image");
+    let image = format!(
+        "![{}]({})",
+        sanitize_markdown_text(alt_text).replace(['[', ']'], ""),
+        image_ref
+    );
+    if let Some(caption) = &figure.caption {
+        let caption = sanitize_markdown_text(caption);
+        if !caption.is_empty() && caption != alt_text {
+            return format!("{image}\n\n{caption}");
+        }
+    }
+    image
+}
+
 fn markdown_row(cells: &[String]) -> String {
     format!(
         "| {} |",
         cells
             .iter()
-            .map(|cell| cell.replace('|', "\\|"))
+            .map(|cell| sanitize_markdown_text(cell).replace('|', "\\|"))
             .collect::<Vec<_>>()
             .join(" | ")
     )
+}
+
+fn sanitize_markdown_text(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            line.chars()
+                .filter(|character| !is_non_printing_control(*character))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_non_printing_control(character: char) -> bool {
+    character.is_control() && !matches!(character, '\n' | '\r' | '\t')
 }
 
 fn normalize_row(row: &[String], width: usize) -> Vec<String> {
@@ -176,6 +216,16 @@ fn render_latex_table(table: &TableBlock) -> String {
 
     output.push_str("\\end{tabular}");
     output
+}
+
+fn render_latex_figure(figure: &FigureBlock) -> String {
+    let label = figure
+        .caption
+        .as_deref()
+        .or(figure.alt_text.as_deref())
+        .or(figure.image_ref.as_deref())
+        .unwrap_or("image");
+    format!("[Image: {}]", escape_latex(label))
 }
 
 fn heading_level(kind: &str) -> Option<usize> {

@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dongler_core::{
@@ -9,6 +10,8 @@ use dongler_core::{
     JsonRenderer, MarkdownRenderer, PlainTextEngine, Renderer, Source,
 };
 use flate2::{write::GzEncoder, Compression};
+
+static OCR_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn parse_text_creates_document_ir() {
@@ -46,6 +49,15 @@ fn markdown_renderer_outputs_paragraph_markdown() {
         to_markdown("Hello from Dongler").unwrap(),
         "Hello from Dongler"
     );
+}
+
+#[test]
+fn markdown_renderer_drops_non_printable_control_characters() {
+    let markdown = to_markdown("safe\0 text \u{8} ok\n\nnext").unwrap();
+
+    assert_eq!(markdown, "safe text ok\n\nnext");
+    assert!(!markdown.contains('\0'));
+    assert!(!markdown.contains('\u{8}'));
 }
 
 #[test]
@@ -457,6 +469,17 @@ fn load_path_extracts_pdf_text_with_page_geometry_and_source_anchors() {
 }
 
 #[test]
+fn load_path_decodes_ascii85_flate_pdf_streams() {
+    let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(markdown.contains("ASCII85 filtered text"));
+    assert_eq!(document.metadata.block_count, 1);
+}
+
+#[test]
 fn load_path_extracts_pdf_with_inherited_page_resources_and_media_box() {
     let path = write_temp_bytes("inherited-page-resources.pdf", inherited_resources_pdf());
 
@@ -492,6 +515,113 @@ fn load_path_recovers_private_use_pdf_font_ascii() {
         Block::Text(block) => assert_eq!(block.text, "FDA125-316B0"),
         other => panic!("expected text block, got {other:?}"),
     }
+}
+
+#[test]
+fn load_path_decodes_to_unicode_bfrange_destination_arrays() {
+    let path = write_temp_bytes("bfrange-array-font.pdf", bfrange_array_font_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    match &document.pages[0].blocks[0] {
+        Block::Text(block) => assert_eq!(block.text, "Average"),
+        other => panic!("expected text block, got {other:?}"),
+    }
+    assert_eq!(document.to_markdown().unwrap(), "Average");
+}
+
+#[test]
+fn load_path_decodes_pdf_encoding_differences() {
+    let path = write_temp_bytes("encoding-differences.pdf", encoding_differences_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(document.to_markdown().unwrap(), "affine Φ Σ Ω don't");
+}
+
+#[test]
+fn load_path_applies_pdf_text_matrix_scale_to_span_boxes() {
+    let path = write_temp_bytes("scaled-text-matrix.pdf", scaled_text_matrix_pdf());
+
+    let document = load_path(&path).unwrap();
+    let Block::Text(block) = &document.pages[0].blocks[0] else {
+        panic!("expected text block");
+    };
+
+    let span = &block.lines[0].spans[0];
+    let bbox = span.bbox.unwrap();
+    assert_eq!(span.text, "Scaled");
+    assert!(
+        bbox.width > 60.0,
+        "expected scaled text width, got {bbox:?}"
+    );
+    assert!(
+        bbox.height > 20.0,
+        "expected scaled text height, got {bbox:?}"
+    );
+}
+
+#[test]
+fn load_path_applies_pdf_character_spacing_to_text_advance() {
+    let path = write_temp_bytes("character-spacing.pdf", character_spacing_pdf());
+
+    let document = load_path(&path).unwrap();
+    let Block::Text(block) = &document.pages[0].blocks[0] else {
+        panic!("expected text block");
+    };
+
+    let spans = &block.lines[0].spans;
+    assert_eq!(block.text, "AB");
+    assert!(spans[1].bbox.unwrap().x - spans[0].bbox.unwrap().x > 12.0);
+}
+
+#[test]
+fn load_path_uses_pdf_font_widths_for_text_advance() {
+    let path = write_temp_bytes("font-widths.pdf", font_widths_pdf());
+
+    let document = load_path(&path).unwrap();
+    let Block::Text(block) = &document.pages[0].blocks[0] else {
+        panic!("expected text block");
+    };
+
+    let spans = &block.lines[0].spans;
+    assert_eq!(block.text, "AB");
+    assert!(
+        spans[1].bbox.unwrap().x - spans[0].bbox.unwrap().x > 10.0,
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn load_path_applies_pdf_text_rise_to_span_box() {
+    let path = write_temp_bytes("text-rise.pdf", text_rise_pdf());
+
+    let document = load_path(&path).unwrap();
+    let Block::Text(block) = &document.pages[0].blocks[0] else {
+        panic!("expected text block");
+    };
+
+    let spans = &block.lines[0].spans;
+    assert_eq!(block.text, "base super");
+    assert!(spans[1].bbox.unwrap().y > spans[0].bbox.unwrap().y);
+}
+
+#[test]
+fn load_path_reconstructs_pdf_superscripts_and_subscripts_from_geometry() {
+    let path = write_temp_bytes("script-geometry.pdf", script_geometry_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(document.to_markdown().unwrap(), "x^2 + y_i = z");
+}
+
+#[test]
+fn load_path_does_not_treat_offset_numeric_table_cells_as_scripts() {
+    let path = write_temp_bytes("offset-numeric-cells.pdf", offset_numeric_cells_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(document.to_markdown().unwrap(), "10.615 -11.607 0.918");
 }
 
 #[test]
@@ -552,6 +682,18 @@ fn load_path_repairs_pdf_math_subscript_spacing() {
 }
 
 #[test]
+fn load_path_repairs_pdf_math_tuple_ellipsis_subscripts() {
+    let path = write_temp_bytes("math-tuple-ellipsis.pdf", math_tuple_ellipsis_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(
+        document.to_markdown().unwrap(),
+        r"( v, x_1),\ldots, ( v, x_s)"
+    );
+}
+
+#[test]
 fn load_path_repairs_pdf_control_glyph_math_text() {
     let path = write_temp_bytes("control-glyph-math.pdf", control_glyph_math_pdf());
 
@@ -560,6 +702,67 @@ fn load_path_repairs_pdf_control_glyph_math_text() {
     assert_eq!(
         document.to_markdown().unwrap(),
         r"sufficient fine-tuning floating 0 \neq \lambda_i \in \mathbb{F}_q and \Lambda = \lambda_1"
+    );
+}
+
+#[test]
+fn load_path_repairs_pdf_combining_overlay_not_equal_math_text() {
+    let path = write_temp_bytes(
+        "combining-not-equal.pdf",
+        utf16be_text_pdf("0 \u{338} = λ_i ∈ Fq"),
+    );
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(
+        document.to_markdown().unwrap(),
+        r"0 \neq \lambda_i \in \mathbb{F}_q"
+    );
+}
+
+#[test]
+fn load_path_sanitizes_nonprinting_pdf_controls_before_ir_text() {
+    let path = write_temp_bytes("nonprinting-controls.pdf", nonprinting_controls_pdf());
+
+    let document = load_path(&path).unwrap();
+    let block_text = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_eq!(block_text, "safe text ok fine after");
+    assert!(
+        !block_text
+            .chars()
+            .any(|character| character.is_control() && character != '\n'),
+        "block text contained nonprinting controls: {block_text:?}"
+    );
+    let span_text = match &document.pages[0].blocks[0] {
+        Block::Text(text) => text.lines[0].spans[0].text.as_str(),
+        _ => panic!("expected text block"),
+    };
+    assert_eq!(span_text, "safe text ok fine after");
+    assert!(
+        !span_text
+            .chars()
+            .any(|character| character.is_control() && character != '\n'),
+        "span text contained nonprinting controls: {span_text:?}"
+    );
+}
+
+#[test]
+fn load_path_repairs_windows_1252_pdf_control_punctuation() {
+    let path = write_temp_bytes("windows-1252-controls.pdf", windows_1252_controls_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(
+        document.to_markdown().unwrap(),
+        "Women's group – before \"quoted\" ... done"
     );
 }
 
@@ -576,6 +779,18 @@ fn load_path_repairs_pdf_math_arrows_and_greek_symbols() {
 }
 
 #[test]
+fn load_path_repairs_pdf_uppercase_greek_math_symbols() {
+    let path = write_temp_bytes("uppercase-greek-math.pdf", uppercase_greek_math_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert_eq!(
+        document.to_markdown().unwrap(),
+        r"\Phi: \Sigma \to \Omega and \sum_i x_i"
+    );
+}
+
+#[test]
 fn load_path_does_not_split_single_column_pdf_math_at_column_band() {
     let path = write_temp_bytes("single-column-math-band.pdf", single_column_math_band_pdf());
 
@@ -584,6 +799,30 @@ fn load_path_does_not_split_single_column_pdf_math_at_column_band() {
     assert_eq!(
         document.to_markdown().unwrap(),
         r"For some integer \ell \geq 1, let 0 \neq \lambda_i \in \mathbb{F}_q and m_i \geq 1"
+    );
+}
+
+#[test]
+fn load_path_does_not_split_repeated_body_math_at_column_band() {
+    let path = write_temp_bytes("repeated-body-math-band.pdf", repeated_body_math_band_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let text_blocks = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        text_blocks,
+        vec![
+            r"Fix a basis i = 1, \ldots, smooth connected divisor",
+            r"One can choose a = \lambda, validation data sample"
+        ]
     );
 }
 
@@ -640,6 +879,42 @@ fn load_path_records_pdf_image_xobject_positions() {
 }
 
 #[test]
+fn load_path_renders_image_only_pdf_as_figure_markdown() {
+    let _guard = OCR_ENV_LOCK.lock().unwrap();
+    clear_ocr_env();
+    let path = write_temp_bytes("image-only.pdf", image_pdf());
+
+    let document = load_path(&path).unwrap();
+    let markdown = document.to_markdown().unwrap();
+
+    assert!(matches!(document.pages[0].blocks[0], Block::Figure(_)));
+    assert!(markdown.contains("!["));
+    assert!(markdown.contains("image-1-Im1"));
+}
+
+#[test]
+#[cfg(unix)]
+fn load_path_can_ocr_image_only_pdf_when_fallback_is_enabled() {
+    let _guard = OCR_ENV_LOCK.lock().unwrap();
+    let path = write_temp_bytes("ocr-image-only.pdf", image_pdf());
+    let harness = fake_ocr_harness();
+
+    std::env::set_var("DONGLER_OCR_FALLBACK", "1");
+    std::env::set_var("DONGLER_PDF_RENDERER", &harness.renderer);
+    std::env::set_var("DONGLER_OCR_ENGINE", &harness.ocr);
+    std::env::set_var("DONGLER_OCR_TEMP_DIR", &harness.temp_dir);
+
+    let document = load_path(&path).unwrap();
+    clear_ocr_env();
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(markdown.contains("recognized OCR text"));
+    assert!(markdown.contains("![Image image-1-Im1](image-1-Im1)"));
+    assert!(matches!(document.pages[0].blocks[0], Block::Text(_)));
+    assert!(matches!(document.pages[0].blocks[1], Block::Figure(_)));
+}
+
+#[test]
 fn load_path_extracts_positioned_pdf_rows_as_table_blocks() {
     let path = write_temp_bytes("table.pdf", table_pdf());
 
@@ -686,6 +961,158 @@ fn load_path_preserves_pdf_text_around_detected_tables() {
         Block::Text(block) => assert_eq!(block.text, "Source note"),
         other => panic!("expected text block after table, got {other:?}"),
     }
+}
+
+#[test]
+fn load_path_extracts_pdf_table_from_implied_word_alignment() {
+    let path = write_temp_bytes("implied-alignment-table.pdf", implied_alignment_table_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a table block");
+
+    assert_eq!(
+        table.headers,
+        vec![
+            "",
+            "Total No",
+            "Private doctor only",
+            "Local council only",
+            "Department of Health only",
+            "More than one",
+            "None",
+        ]
+    );
+    assert_eq!(
+        table.rows,
+        vec![
+            vec![
+                "Sydney".to_owned(),
+                "160".to_owned(),
+                "108 (68)".to_owned(),
+                "11 (7)".to_owned(),
+                "15 (9)".to_owned(),
+                "25 (16)".to_owned(),
+                "1 (0-6)".to_owned(),
+            ],
+            vec![
+                "Elsewhere".to_owned(),
+                "44".to_owned(),
+                "28 (65)".to_owned(),
+                "1 (2)".to_owned(),
+                "9 (20)".to_owned(),
+                "4 (9)".to_owned(),
+                "2 (5)".to_owned(),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn load_path_extracts_pdf_table_from_ruled_grid_lines() {
+    let path = write_temp_bytes("ruled-grid-table.pdf", ruled_grid_table_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected ruled grid table");
+
+    assert_eq!(table.headers, vec!["Description", "Result"]);
+    assert_eq!(table.rows, vec![vec!["Alpha".to_owned(), "42".to_owned()]]);
+}
+
+#[test]
+fn load_path_does_not_treat_unlabeled_ruled_columns_as_table() {
+    let path = write_temp_bytes("unlabeled-ruled-columns.pdf", unlabeled_ruled_columns_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    assert!(document.pages[0]
+        .blocks
+        .iter()
+        .all(|block| !matches!(block, Block::Table(_))));
+    assert!(document.to_markdown().unwrap().contains("Left heading"));
+}
+
+#[test]
+fn load_path_extracts_unlabeled_multirow_ruled_grid_as_table() {
+    let path = write_temp_bytes(
+        "unlabeled-multirow-ruled-grid.pdf",
+        unlabeled_multirow_ruled_grid_pdf(),
+    );
+
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected unlabeled ruled grid table");
+
+    assert_eq!(table.headers, vec!["Class", "Explanation"]);
+    assert_eq!(
+        table.rows,
+        vec![
+            vec![
+                "Marine".to_owned(),
+                "Cargo and hull Large events".to_owned()
+            ],
+            vec!["Property".to_owned(), "Direct risks".to_owned()],
+            vec!["Cyber".to_owned(), "Ransomware cover".to_owned()]
+        ]
+    );
+}
+
+#[test]
+fn load_path_does_not_treat_numeric_multicolumn_body_as_implied_table() {
+    let path = write_temp_bytes(
+        "numeric-multicolumn-body.pdf",
+        numeric_multicolumn_body_pdf(),
+    );
+
+    let document = load_path(&path).unwrap();
+
+    assert!(document.pages[0]
+        .blocks
+        .iter()
+        .all(|block| !matches!(block, Block::Table(_))));
+    assert_eq!(
+        document.to_markdown().unwrap(),
+        "Left body 2015\n\nLeft continuation 2016\n\nRight body 3.9 kg\n\nRight continuation 5.0 kg"
+    );
+}
+
+#[test]
+fn load_path_keeps_column_order_around_detected_pdf_table() {
+    let path = write_temp_bytes(
+        "table-with-following-columns.pdf",
+        table_with_following_columns_pdf(),
+    );
+
+    let document = load_path(&path).unwrap();
+    let markdown = document.to_markdown().unwrap();
+
+    assert!(markdown.contains("| Name | Value |"));
+    assert!(
+        markdown.contains("Left one\n\nLeft two\n\nRight one\n\nRight two"),
+        "{markdown}"
+    );
 }
 
 #[test]
@@ -806,6 +1233,91 @@ fn load_path_splits_pdf_columns_at_tight_right_column_band() {
             "demand is checked at the beginning of every left column continues",
             "gagement. Beyond the number of words right column continues"
         ]
+    );
+}
+
+#[test]
+fn load_path_splits_pdf_columns_when_left_column_contains_math() {
+    let path = write_temp_bytes("math-left-column-band.pdf", math_left_column_band_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let text_blocks = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        text_blocks,
+        vec![
+            r"1: T = \lambda",
+            "2: i = arg max",
+            "Right prose begins additional words",
+            "Right prose continues additional words"
+        ]
+    );
+}
+
+#[test]
+fn load_path_splits_pdf_algorithm_columns_with_single_right_run() {
+    let path = write_temp_bytes(
+        "algorithm-single-right-run.pdf",
+        algorithm_single_right_run_pdf(),
+    );
+
+    let document = load_path(&path).unwrap();
+
+    let text_blocks = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        text_blocks,
+        vec![
+            r"1: T = \lambda",
+            "2: while l \\leq N do",
+            "a correlation-aware selection mechanism",
+            "resolve coherence conflicts"
+        ]
+    );
+}
+
+#[test]
+fn load_path_keeps_right_column_formula_base_out_of_left_paragraph() {
+    let path = write_temp_bytes(
+        "formula-base-before-tight-band.pdf",
+        formula_base_before_tight_band_pdf(),
+    );
+
+    let document = load_path(&path).unwrap();
+
+    let text_blocks = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !text_blocks.iter().any(|text| text.contains("reduces H")),
+        "{text_blocks:?}"
+    );
+    assert!(
+        text_blocks
+            .iter()
+            .any(|text| text.contains("HT is formed by row vectors")),
+        "{text_blocks:?}"
     );
 }
 
@@ -1002,6 +1514,7 @@ fn load_path_extracts_image_dimensions_as_page_asset() {
         }
         other => panic!("expected figure block, got {other:?}"),
     }
+    assert_eq!(document.to_markdown().unwrap(), "![scan.png](image-1)");
 }
 
 #[test]
@@ -1838,6 +2351,56 @@ fn write_temp_bytes(name: &str, contents: Vec<u8>) -> PathBuf {
     path
 }
 
+fn clear_ocr_env() {
+    for key in [
+        "DONGLER_OCR_FALLBACK",
+        "DONGLER_PDF_RENDERER",
+        "DONGLER_OCR_ENGINE",
+        "DONGLER_OCR_TEMP_DIR",
+    ] {
+        std::env::remove_var(key);
+    }
+}
+
+#[cfg(unix)]
+struct FakeOcrHarness {
+    renderer: PathBuf,
+    ocr: PathBuf,
+    temp_dir: PathBuf,
+}
+
+#[cfg(unix)]
+fn fake_ocr_harness() -> FakeOcrHarness {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = write_temp_bytes("harness-marker", Vec::new())
+        .parent()
+        .unwrap()
+        .to_owned();
+    let renderer = root.join("fake-pdftoppm");
+    let ocr = root.join("fake-tesseract");
+    let temp_dir = root.join("ocr-temp");
+    fs::create_dir_all(&temp_dir).unwrap();
+    fs::write(
+        &renderer,
+        "#!/bin/sh\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf 'fake image' > \"${last}.png\"\n",
+    )
+    .unwrap();
+    fs::write(
+        &ocr,
+        "#!/bin/sh\nprintf 'recognized OCR text\\nsecond OCR line\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&renderer, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&ocr, fs::Permissions::from_mode(0o755)).unwrap();
+
+    FakeOcrHarness {
+        renderer,
+        ocr,
+        temp_dir,
+    }
+}
+
 fn gzip_bytes(contents: &str) -> Vec<u8> {
     gzip_raw_bytes(contents.as_bytes())
 }
@@ -1852,6 +2415,31 @@ fn minimal_text_pdf(text: &str) -> Vec<u8> {
     pdf_fixture(&format!(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
     ), &format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET"), "")
+}
+
+fn ascii85_flate_pdf() -> Vec<u8> {
+    let encoded_stream =
+        "<~Garg^;:'MC<%p.,#Y@rK2Zb0*KocuP%EDjh:JV?sKs]'oP165U'SV_\"M@rX;O=URe&-,ML%L)~>";
+    let mut pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n5 0 obj\n<< /Filter [ /ASCII85Decode /FlateDecode ] /Length {} >>\nstream\n{}\nendstream\nendobj\n",
+        encoded_stream.len(),
+        encoded_stream
+    )
+    .into_bytes();
+    pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+fn utf16be_text_pdf(text: &str) -> Vec<u8> {
+    let mut bytes = vec![0xfe, 0xff];
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    let literal = bytes
+        .into_iter()
+        .map(|byte| format!("\\{byte:03o}"))
+        .collect::<String>();
+    minimal_text_pdf(&literal)
 }
 
 fn table_pdf() -> Vec<u8> {
@@ -1909,6 +2497,90 @@ end";
     pdf
 }
 
+fn bfrange_array_font_pdf() -> Vec<u8> {
+    let cmap = "/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfrange
+<0000> <0005> [<0041> <0076> <00650072> <0061> <0067> <0065>]
+endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end";
+    let content_stream = "BT /F1 12 Tf 72 720 Td <000000010002000300040005> Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /ArrayMap /Encoding /Identity-H /ToUnicode 6 0 R >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n6 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n",
+        content_stream.len(),
+        content_stream,
+        cmap.len(),
+        cmap
+    )
+    .into_bytes();
+    pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+fn encoding_differences_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (a\\016ne \\010 \\006 \\012 don\\047t) Tj ET",
+        "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Custom /Encoding 7 0 R >>\nendobj\n7 0 obj\n<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [ 6 /Sigma 8 /Phi 10 /Omega 14 /ffi 39 /quoteright ] >>\nendobj\n",
+    )
+}
+
+fn scaled_text_matrix_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 2 0 0 2 72 720 Tm (Scaled) Tj ET",
+        "",
+    )
+}
+
+fn character_spacing_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 10 Tc 72 720 Td (A) Tj (B) Tj ET",
+        "",
+    )
+}
+
+fn font_widths_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (A) Tj (B) Tj ET",
+        "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Custom /FirstChar 65 /LastChar 66 /Widths [1000 200] >>\nendobj\n",
+    )
+}
+
+fn text_rise_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (base) Tj 2 Ts ( super) Tj ET",
+        "",
+    )
+}
+
+fn script_geometry_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (x) Tj 3 Ts /F1 8 Tf (2) Tj 0 Ts /F1 12 Tf ( + y) Tj -3 Ts /F1 8 Tf (i) Tj 0 Ts /F1 12 Tf ( = z) Tj ET",
+        "",
+    )
+}
+
+fn offset_numeric_cells_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (10.615) Tj -3 Ts /F1 8 Tf (-11.607) Tj 0 Ts /F1 12 Tf ( 0.918) Tj ET",
+        "",
+    )
+}
+
 fn word_piece_spacing_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
@@ -1941,10 +2613,34 @@ fn math_subscript_spacing_pdf() -> Vec<u8> {
     )
 }
 
+fn math_tuple_ellipsis_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (( v, x 1),..., ( v, xs)) Tj ET",
+        "",
+    )
+}
+
 fn control_glyph_math_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 720 Td (suf\\002cient \\002ne-tuning \\003oating 0 6 = λ_i ∈ Fq and \\003 = λ_1) Tj ET",
+        "",
+    )
+}
+
+fn nonprinting_controls_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (safe\\000 text \\024 ok \\002ne \\031after) Tj ET",
+        "",
+    )
+}
+
+fn windows_1252_controls_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (Women\\222s group \\226 before \\223quoted\\224 \\205 done) Tj ET",
         "",
     )
 }
@@ -1957,10 +2653,26 @@ fn math_arrows_pdf() -> Vec<u8> {
     )
 }
 
+fn uppercase_greek_math_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (Φ: Σ → Ω and ∑_i x_i) Tj ET",
+        "",
+    )
+}
+
 fn single_column_math_band_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 720 Td (For some integer ℓ ≥ 1, let 0 6 = λ) Tj 234 0 Td (_i ∈ Fq and m_i ≥ 1) Tj ET",
+        "",
+    )
+}
+
+fn repeated_body_math_band_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (Fix a basis) Tj 178 0 Td (i = 1, ...,) Tj 56 0 Td (smooth connected) Tj (divisor) Tj ET BT /F1 12 Tf 72 700 Td (One can choose) Tj 178 0 Td (a = λ,) Tj 56 0 Td (validation data) Tj (sample) Tj ET",
         "",
     )
 }
@@ -1985,6 +2697,133 @@ fn table_with_surrounding_text_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 750 Td (Results Summary) Tj 0 -30 Td (Name) Tj 150 0 Td (Value) Tj -150 -20 Td (Alpha) Tj 150 0 Td (42) Tj -150 -20 Td (Source note) Tj ET",
+        "",
+    )
+}
+
+fn implied_alignment_table_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        ("Table 1 Providers of immunisations", 143.0, 774.0),
+        ("Total", 206.0, 758.0),
+        ("No", 206.0, 751.0),
+        ("Private", 268.0, 745.0),
+        ("doctor", 292.0, 745.0),
+        ("Local", 331.0, 745.0),
+        ("council", 350.0, 745.0),
+        ("Department", 390.0, 745.0),
+        ("of", 427.0, 745.0),
+        ("More", 459.0, 745.0),
+        ("than", 478.0, 745.0),
+        ("None", 516.0, 745.0),
+        ("only", 268.0, 738.0),
+        ("only", 331.0, 738.0),
+        ("Health", 390.0, 738.0),
+        ("only", 413.0, 738.0),
+        ("one", 459.0, 738.0),
+        ("Sydney", 143.0, 724.0),
+        ("160", 206.0, 724.0),
+        ("108", 269.0, 724.0),
+        ("(68)", 282.0, 724.0),
+        ("11", 331.0, 724.0),
+        ("(7)", 341.0, 724.0),
+        ("15", 391.0, 724.0),
+        ("(9)", 401.0, 724.0),
+        ("25", 459.0, 724.0),
+        ("(16)", 470.0, 724.0),
+        ("1", 517.0, 724.0),
+        ("(0-6)", 523.0, 724.0),
+        ("Elsewhere", 143.0, 717.0),
+        ("44", 209.0, 717.0),
+        ("28", 272.0, 717.0),
+        ("(65)", 282.0, 717.0),
+        ("1", 335.0, 717.0),
+        ("(2)", 341.0, 717.0),
+        ("9", 394.0, 717.0),
+        ("(20)", 401.0, 717.0),
+        ("4", 463.0, 717.0),
+        ("(9)", 470.0, 717.0),
+        ("2", 516.0, 717.0),
+        ("(5)", 523.0, 717.0),
+        ("Body paragraph after table", 143.0, 690.0),
+    ] {
+        ops.push(format!("BT /F1 8 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn ruled_grid_table_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 772 Td (Table 1 Results) Tj ET
+72 700 220 60 re S
+182 700 m 182 760 l S
+72 730 m 292 730 l S
+BT /F1 12 Tf 90 742 Td (Description) Tj 104 0 Td (Result) Tj ET
+BT /F1 12 Tf 110 712 Td (Alpha) Tj 126 0 Td (42) Tj ET",
+        "",
+    )
+}
+
+fn unlabeled_ruled_columns_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "72 700 220 60 re S
+182 700 m 182 760 l S
+72 730 m 292 730 l S
+BT /F1 12 Tf 90 742 Td (Left heading) Tj 104 0 Td (Right heading) Tj ET
+BT /F1 12 Tf 110 712 Td (Left body) Tj 104 0 Td (Right body) Tj ET",
+        "",
+    )
+}
+
+fn unlabeled_multirow_ruled_grid_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "72 620 420 100 re S
+212 620 m 212 720 l S
+72 695 m 492 695 l S
+72 670 m 492 670 l S
+72 645 m 492 645 l S
+BT /F1 10 Tf 90 704 Td (Class) Tj 150 0 Td (Explanation) Tj ET
+BT /F1 10 Tf 90 679 Td (Marine) Tj 150 0 Td (Cargo and hull) Tj ET
+BT /F1 10 Tf 240 674 Td (Large events) Tj ET
+BT /F1 10 Tf 90 654 Td (Property) Tj 150 0 Td (Direct risks) Tj ET
+BT /F1 10 Tf 90 629 Td (Cyber) Tj 150 0 Td (Ransomware cover) Tj ET",
+        "",
+    )
+}
+
+fn numeric_multicolumn_body_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        ("Left body", 72.0, 720.0),
+        ("2015", 170.0, 720.0),
+        ("Right body", 330.0, 720.0),
+        ("3.9 kg", 455.0, 720.0),
+        ("Left continuation", 72.0, 700.0),
+        ("2016", 170.0, 700.0),
+        ("Right", 330.0, 700.0),
+        ("continuation", 365.0, 700.0),
+        ("5.0 kg", 455.0, 700.0),
+    ] {
+        ops.push(format!("BT /F1 12 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn table_with_following_columns_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 760 Td (Table 1) Tj 0 -20 Td (Name) Tj 150 0 Td (Value) Tj 120 0 Td (Count) Tj -270 -20 Td (Alpha) Tj 150 0 Td (42) Tj 120 0 Td (7) Tj -270 -20 Td (Beta) Tj 150 0 Td (43) Tj 120 0 Td (8) Tj -270 -70 Td (Left one) Tj 234 0 Td (Right one) Tj -234 -20 Td (Left two) Tj 234 0 Td (Right two) Tj ET",
         "",
     )
 }
@@ -2025,6 +2864,30 @@ fn tight_band_columns_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 720 Td (demand is checked at) Tj ( the beginning) Tj ( of every) Tj 234 0 Td (gagement.) Tj ( Beyond the number of words) Tj ET BT /F1 12 Tf 72 700 Td (left column) Tj ( continues) Tj 234 0 Td (right column) Tj ( continues) Tj ET",
+        "",
+    )
+}
+
+fn math_left_column_band_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (Right prose begins) Tj (additional words) Tj ET BT /F1 12 Tf 72 700 Td (2: i) Tj 20 0 Td (= arg max) Tj 214 0 Td (Right prose continues) Tj (additional words) Tj ET",
+        "",
+    )
+}
+
+fn algorithm_single_right_run_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (a correlation-aware selection mechanism) Tj ET BT /F1 12 Tf 72 700 Td (2: while) Tj 40 0 Td (l ≤ N do) Tj 174 0 Td (resolve coherence conflicts) Tj ET",
+        "",
+    )
+}
+
+fn formula_base_before_tight_band_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 740 Td (lower bound pruning strategies, MILP significantly reduces) Tj 234 0 Td (H) Tj 9 0 Td (T) Tj 18 0 Td (is formed by row vectors) Tj ET BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (right prose starts here) Tj ET BT /F1 12 Tf 72 700 Td (2: while) Tj 40 0 Td (l ≤ N do) Tj 194 0 Td (right prose continues here) Tj ET",
         "",
     )
 }

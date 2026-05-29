@@ -10,6 +10,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from collections import Counter
@@ -60,6 +61,7 @@ STRUCTURED_DOCUMENT_SUFFIXES = {
     ".nxml",
     ".tei",
 }
+REFERENCE_EXTRACTOR_NAMES = ("pypdf", "pdfminer", "pymupdf", "pdfplumber")
 REFERENCE_SUFFIXES = {
     ".txt",
     ".text",
@@ -102,6 +104,15 @@ class DocumentSummary:
 class ReferenceTarget:
     text: str
     page_numbers: list[int] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class OlmocrCheckReport:
+    pass_rate: float | None
+    passed: int
+    scored: int
+    failures: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    check_type_stats: dict[str, dict[str, int]] = dataclasses.field(default_factory=dict)
 
 
 def summarize_document_json(path: Path) -> DocumentSummary:
@@ -537,26 +548,318 @@ def olmocr_test_is_disabled(test: dict[str, Any]) -> bool:
 
 
 def olmocr_unit_pass_rate(tests: list[dict[str, Any]], json_out: Path) -> float | None:
+    return olmocr_unit_check_report(tests, json_out).pass_rate
+
+
+def olmocr_unit_check_report(
+    tests: list[dict[str, Any]],
+    json_out: Path,
+    source_pdf: str | None = None,
+    split: str | None = None,
+    reference_outputs: dict[str, str] | None = None,
+) -> OlmocrCheckReport:
     if not tests:
-        return None
+        return OlmocrCheckReport(None, passed=0, scored=0)
     try:
         document = json.loads(json_out.read_text())
     except (OSError, json.JSONDecodeError):
-        return None
+        return OlmocrCheckReport(None, passed=0, scored=0)
     extracted_text = extracted_text_from_document(document)
     table_grids = table_grids_from_document(document)
     passed = 0
     scored = 0
+    failures: list[dict[str, Any]] = []
+    check_type_stats: dict[str, dict[str, int]] = {}
     for test in tests:
+        check_type = normalized_olmocr_check_type(test)
         result = evaluate_olmocr_unit_test(test, extracted_text, table_grids)
         if result is None:
             continue
         scored += 1
+        stats = check_type_stats.setdefault(check_type, {"passed": 0, "scored": 0})
+        stats["scored"] += 1
         if result:
             passed += 1
+            stats["passed"] += 1
+        else:
+            failures.append(
+                olmocr_failure_diagnostic(
+                    test,
+                    extracted_text,
+                    table_grids,
+                    source_pdf=source_pdf,
+                    split=split,
+                    reference_outputs=reference_outputs or {},
+                )
+            )
     if scored == 0:
-        return None
-    return passed / scored
+        return OlmocrCheckReport(None, passed=0, scored=0)
+    return OlmocrCheckReport(
+        passed / scored,
+        passed=passed,
+        scored=scored,
+        failures=failures,
+        check_type_stats=check_type_stats,
+    )
+
+
+def normalized_olmocr_check_type(test: dict[str, Any]) -> str:
+    return str(test.get("type", "")).strip().lower() or "unknown"
+
+
+def olmocr_failure_diagnostic(
+    test: dict[str, Any],
+    extracted_text: str,
+    table_grids: list[list[list[str]]],
+    source_pdf: str | None,
+    split: str | None,
+    reference_outputs: dict[str, str],
+) -> dict[str, Any]:
+    check_type = normalized_olmocr_check_type(test)
+    expected = olmocr_failure_expected_text(test)
+    search_terms = olmocr_failure_search_terms(test, expected)
+    reference_extractor, reference_window = best_reference_failure_window(
+        test,
+        reference_outputs,
+        search_terms,
+    )
+    return {
+        "source_pdf": source_pdf,
+        "split": split,
+        "check_type": check_type,
+        "expected": expected,
+        "dongler_window": compact_text_window(extracted_text, search_terms),
+        "reference_extractor": reference_extractor,
+        "reference_window": reference_window,
+        "likely_failure_category": classify_olmocr_failure(
+            test,
+            extracted_text,
+            table_grids,
+        ),
+    }
+
+
+def olmocr_failure_expected_text(test: dict[str, Any]) -> str:
+    check_type = normalized_olmocr_check_type(test)
+    if check_type == "order":
+        before = olmocr_expected_text(test, ["before", "first"])
+        after = olmocr_expected_text(test, ["after", "second"])
+        if before and after:
+            return f"{before} before {after}"
+    if check_type == "table":
+        parts = []
+        for key in [
+            "cell",
+            "text",
+            "value",
+            "expected",
+            "up",
+            "down",
+            "left",
+            "right",
+            "top_heading",
+            "left_heading",
+        ]:
+            value = olmocr_expected_text(test, [key])
+            if value and value not in parts:
+                parts.append(value)
+        if parts:
+            return " | ".join(parts)
+    return (
+        olmocr_expected_text(
+            test,
+            ["text", "substring", "value", "expected", "math", "formula", "expression"],
+        )
+        or ""
+    )
+
+
+def olmocr_failure_search_terms(test: dict[str, Any], expected: str) -> list[str]:
+    terms = []
+
+    def add_term(value: str | None) -> None:
+        if not value:
+            return
+        if value not in terms:
+            terms.append(value)
+        alias = latex_math_search_alias(value)
+        if alias and alias not in terms:
+            terms.append(alias)
+
+    for key in [
+        "text",
+        "substring",
+        "value",
+        "expected",
+        "math",
+        "formula",
+        "expression",
+        "before",
+        "first",
+        "after",
+        "second",
+        "cell",
+        "up",
+        "down",
+        "left",
+        "right",
+        "top_heading",
+        "left_heading",
+    ]:
+        value = olmocr_expected_text(test, [key])
+        add_term(value)
+    add_term(expected)
+    return terms
+
+
+def latex_math_search_alias(text: str) -> str | None:
+    alias = str(text)
+    replacements = [
+        (r"\Gamma", "Γ"),
+        (r"\Theta", "Θ"),
+        (r"\Lambda", "Λ"),
+        (r"\Pi", "Π"),
+        (r"\Sigma", "Σ"),
+        (r"\Phi", "Φ"),
+        (r"\Omega", "Ω"),
+        (r"\alpha", "α"),
+        (r"\beta", "β"),
+        (r"\gamma", "γ"),
+        (r"\delta", "δ"),
+        (r"\epsilon", "ε"),
+        (r"\lambda", "λ"),
+        (r"\theta", "θ"),
+        (r"\rho", "ρ"),
+        (r"\tau", "τ"),
+        (r"\phi", "φ"),
+        (r"\omega", "ω"),
+        (r"\infty", "∞"),
+        (r"\in", "∈"),
+        (r"\cup", "∪"),
+        (r"\cap", "∩"),
+        (r"\subseteq", "⊆"),
+        (r"\supseteq", "⊇"),
+        (r"\leq", "≤"),
+        (r"\geq", "≥"),
+        (r"\neq", "≠"),
+        (r"\times", "×"),
+        (r"\pm", "±"),
+        (r"\to", "→"),
+        (r"\mapsto", "↦"),
+        (r"\cdots", "..."),
+        (r"\ldots", "..."),
+    ]
+    for before, after in replacements:
+        alias = alias.replace(before, after)
+    alias = re.sub(r"([_^])\{([^{}]+)\}", r"\1\2", alias)
+    alias = alias.replace("{", "").replace("}", "")
+    return alias if alias != text else None
+
+
+def best_reference_failure_window(
+    test: dict[str, Any],
+    reference_outputs: dict[str, str],
+    search_terms: list[str],
+) -> tuple[str | None, str | None]:
+    best_name = None
+    best_text = None
+    best_score = -1
+    for name, text in reference_outputs.items():
+        if not str(text).strip():
+            continue
+        score = reference_output_match_score(test, str(text), search_terms)
+        if score > best_score:
+            best_name = name
+            best_text = str(text)
+            best_score = score
+    if best_name is None or best_text is None or best_score <= 0:
+        return None, None
+    return best_name, compact_text_window(best_text, search_terms)
+
+
+def reference_output_match_score(
+    test: dict[str, Any],
+    text: str,
+    search_terms: list[str],
+) -> int:
+    score = 0
+    if evaluate_olmocr_unit_test(test, text, []):
+        score += 100
+    normalized = normalize_olmocr_text(text, test).lower()
+    normalized_math = normalize_math_text(text)
+    for term in search_terms:
+        compact_term = " ".join(str(term).split())
+        if not compact_term:
+            continue
+        if normalize_olmocr_text(compact_term, test).lower() in normalized:
+            score += 10
+        if normalize_math_text(compact_term) in normalized_math:
+            score += 5
+    return score
+
+
+def compact_text_window(text: str, needles: list[str], radius: int = 240) -> str:
+    source = " ".join(str(text).split())
+    if not source:
+        return ""
+    normalized_source = source.lower()
+    match_index = -1
+    for needle in needles:
+        normalized_needle = " ".join(str(needle).split()).lower()
+        if not normalized_needle:
+            continue
+        match_index = normalized_source.find(normalized_needle)
+        if match_index >= 0:
+            break
+    if match_index < 0:
+        match_index = 0
+    start = max(match_index - radius, 0)
+    end = min(match_index + radius, len(source))
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(source) else ""
+    return f"{prefix}{source[start:end]}{suffix}"
+
+
+def classify_olmocr_failure(
+    test: dict[str, Any],
+    extracted_text: str,
+    table_grids: list[list[list[str]]],
+) -> str:
+    check_type = normalized_olmocr_check_type(test)
+    if check_type == "math":
+        return "math preservation"
+    if check_type == "table":
+        return "table structure"
+    if check_type == "order":
+        return "reading order"
+    if not extracted_text.strip():
+        return "scanned/OCR missing"
+    if extracted_text_is_only_image_placeholders(extracted_text):
+        return "scanned/OCR missing"
+    if check_type == "absent":
+        return "Markdown rendering"
+    expected = olmocr_failure_expected_text(test)
+    if any(
+        character == "\0" or unicodedata_category_startswith_control(character)
+        for character in extracted_text
+    ):
+        return "font decoding"
+    if expected and any(ord(character) > 127 for character in expected):
+        return "font decoding"
+    if table_grids and check_type == "present":
+        return "table structure"
+    return "text-state/matrix handling"
+
+
+def extracted_text_is_only_image_placeholders(text: str) -> bool:
+    normalized = " ".join(str(text).split())
+    if not normalized:
+        return False
+    return re.fullmatch(r"(?:Image image-[^\s]+)(?: Image image-[^\s]+)*", normalized) is not None
+
+
+def unicodedata_category_startswith_control(character: str) -> bool:
+    return ord(character) < 32 and character not in "\n\r\t"
 
 
 def extracted_text_from_document(document: dict[str, Any]) -> str:
@@ -1034,6 +1337,99 @@ def run_document(cli: Path, document: Path, json_out: Path) -> tuple[bool, float
     return True, elapsed, None
 
 
+def parse_reference_extractors(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    selected = []
+    aliases = {"pdfminer.six": "pdfminer", "fitz": "pymupdf"}
+    for value in values:
+        for raw_name in str(value).split(","):
+            name = aliases.get(raw_name.strip().lower(), raw_name.strip().lower())
+            if not name or name == "none":
+                continue
+            if name == "all":
+                candidates = REFERENCE_EXTRACTOR_NAMES
+            elif name in REFERENCE_EXTRACTOR_NAMES:
+                candidates = (name,)
+            else:
+                allowed = ", ".join((*REFERENCE_EXTRACTOR_NAMES, "all"))
+                raise ValueError(f"unknown reference extractor {raw_name!r}; use one of {allowed}")
+            for candidate in candidates:
+                if candidate not in selected:
+                    selected.append(candidate)
+    return selected
+
+
+def reference_extractor_outputs_for_pdf(
+    document: Path,
+    extractors: list[str],
+) -> dict[str, str]:
+    outputs = {}
+    for extractor in extractors:
+        try:
+            text = reference_extractor_text(document, extractor)
+        except Exception:
+            continue
+        if text and text.strip():
+            outputs[extractor] = text
+    return outputs
+
+
+def reference_extractor_text(document: Path, extractor: str) -> str:
+    if extractor == "pypdf":
+        return pypdf_reference_text(document)
+    if extractor == "pdfminer":
+        return pdfminer_reference_text(document)
+    if extractor == "pymupdf":
+        return pymupdf_reference_text(document)
+    if extractor == "pdfplumber":
+        return pdfplumber_reference_text(document)
+    raise ValueError(f"unknown reference extractor {extractor!r}")
+
+
+def pypdf_reference_text(document: Path) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(document))
+    parts = []
+    for page in reader.pages:
+        try:
+            text = page.extract_text(extraction_mode="layout")
+        except TypeError:
+            text = page.extract_text()
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def pdfminer_reference_text(document: Path) -> str:
+    from pdfminer.high_level import extract_text
+
+    return extract_text(str(document)) or ""
+
+
+def pymupdf_reference_text(document: Path) -> str:
+    try:
+        import fitz
+    except ImportError:
+        import pymupdf as fitz
+
+    with fitz.open(str(document)) as pdf:
+        return "\n\n".join(page.get_text("text", sort=True) or "" for page in pdf)
+
+
+def pdfplumber_reference_text(document: Path) -> str:
+    import pdfplumber
+
+    parts = []
+    with pdfplumber.open(str(document)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(layout=True) or page.extract_text() or ""
+            if text:
+                parts.append(text)
+    return "\n\n".join(parts)
+
+
 def render_visual_comparison(
     repo_root: Path,
     cli: Path,
@@ -1095,6 +1491,8 @@ def benchmark_dataset(
     repo_root: Path | None = None,
     visual_samples: int = 0,
     visual_out_dir: Path | None = None,
+    reference_extractors: list[str] | None = None,
+    ocr_fallback: bool = False,
 ) -> dict[str, Any]:
     slug = dataset["slug"]
     local_dir = data_root / dataset.get("local_dir", slug)
@@ -1144,6 +1542,10 @@ def benchmark_dataset(
         "ground_truth_checks": 0,
         "ground_truth_accuracy_by_document": [],
         "ground_truth_metric": None,
+        "olmocr_failure_count": 0,
+        "olmocr_failures": [],
+        "olmocr_pass_rate_by_check_type": {},
+        "olmocr_pass_rate_by_split": {},
         "visual_comparisons": [],
         "notes": dataset.get("notes", ""),
         "errors": [],
@@ -1158,15 +1560,28 @@ def benchmark_dataset(
     dataset_out = out_dir / slug
     dataset_out.mkdir(parents=True, exist_ok=True)
     olmocr_tests_by_pdf = index_olmocr_tests(local_dir) if slug == "olmocr-bench" else {}
+    reference_extractors = reference_extractors or []
     total_elapsed = 0.0
     total_bbox_blocks = 0
     total_anchored = 0
     total_accuracy = 0.0
     total_accuracy_weight = 0
+    olmocr_check_type_stats: dict[str, dict[str, int]] = {}
+    olmocr_split_stats: dict[str, dict[str, int]] = {}
 
     for document in selected:
         json_out = dataset_out / output_name(slug, document)
-        ok, elapsed, error = run_document(cli, document, json_out)
+        previous_ocr_fallback = os.environ.get("DONGLER_OCR_FALLBACK")
+        if ocr_fallback:
+            os.environ["DONGLER_OCR_FALLBACK"] = "1"
+        try:
+            ok, elapsed, error = run_document(cli, document, json_out)
+        finally:
+            if ocr_fallback:
+                if previous_ocr_fallback is None:
+                    os.environ.pop("DONGLER_OCR_FALLBACK", None)
+                else:
+                    os.environ["DONGLER_OCR_FALLBACK"] = previous_ocr_fallback
         total_elapsed += elapsed
         result["documents_evaluated"] += 1
         if document.suffix.lower() == ".pdf":
@@ -1187,7 +1602,20 @@ def benchmark_dataset(
         if not olmocr_tests:
             olmocr_tests = olmocr_tests_by_pdf.get(document.name, [])
         if olmocr_tests:
-            accuracy = olmocr_unit_pass_rate(olmocr_tests, json_out)
+            split = benchmark_group_key(document, local_dir)
+            reference_outputs = (
+                reference_extractor_outputs_for_pdf(document, reference_extractors)
+                if reference_extractors
+                else {}
+            )
+            report = olmocr_unit_check_report(
+                olmocr_tests,
+                json_out,
+                source_pdf=str(document),
+                split=split,
+                reference_outputs=reference_outputs,
+            )
+            accuracy = report.pass_rate
             if accuracy is not None:
                 weight = len(olmocr_tests)
                 total_accuracy += accuracy * weight
@@ -1201,8 +1629,25 @@ def benchmark_dataset(
                         "accuracy": accuracy,
                         "metric": "olmocr_unit_pass_rate",
                         "checks": len(olmocr_tests),
+                        "passed": report.passed,
+                        "scored": report.scored,
+                        "failures": len(report.failures),
                     }
                 )
+                merge_olmocr_stats(
+                    olmocr_split_stats,
+                    split,
+                    passed=report.passed,
+                    scored=report.scored,
+                )
+                for check_type, stats in report.check_type_stats.items():
+                    merge_olmocr_stats(
+                        olmocr_check_type_stats,
+                        check_type,
+                        passed=stats["passed"],
+                        scored=stats["scored"],
+                    )
+                result["olmocr_failures"].extend(report.failures)
         else:
             reference = reference_target_for_document(document, local_dir)
             if reference:
@@ -1274,7 +1719,34 @@ def benchmark_dataset(
     result["pages_per_second"] = result["pages"] / total_elapsed if total_elapsed else None
     if result["ground_truth_documents"]:
         result["ground_truth_accuracy"] = total_accuracy / total_accuracy_weight
+    result["olmocr_failure_count"] = len(result["olmocr_failures"])
+    result["olmocr_pass_rate_by_check_type"] = format_olmocr_stats(olmocr_check_type_stats)
+    result["olmocr_pass_rate_by_split"] = format_olmocr_stats(olmocr_split_stats)
     return result
+
+
+def merge_olmocr_stats(
+    target: dict[str, dict[str, int]],
+    key: str,
+    passed: int,
+    scored: int,
+) -> None:
+    stats = target.setdefault(key, {"passed": 0, "scored": 0})
+    stats["passed"] += passed
+    stats["scored"] += scored
+
+
+def format_olmocr_stats(stats: dict[str, dict[str, int]]) -> dict[str, dict[str, float | int | None]]:
+    formatted = {}
+    for key, values in sorted(stats.items()):
+        scored = values["scored"]
+        passed = values["passed"]
+        formatted[key] = {
+            "passed": passed,
+            "scored": scored,
+            "pass_rate": passed / scored if scored else None,
+        }
+    return formatted
 
 
 def markdown_table(
@@ -1343,7 +1815,29 @@ def parse_args() -> argparse.Namespace:
         "--visual-out-dir",
         default=os.environ.get("DONGLER_VISUAL_OUT_DIR", "eval/out/visual-comparisons"),
     )
+    parser.add_argument(
+        "--reference-extractors",
+        action="append",
+        default=[],
+        help=(
+            "Optional comma-separated reference extractors for olmOCR failure windows: "
+            "pypdf, pdfminer, pymupdf, pdfplumber, or all."
+        ),
+    )
+    parser.add_argument(
+        "--ocr-fallback",
+        action="store_true",
+        help="Enable Dongler's optional OCR fallback during benchmark extraction.",
+    )
     return parser.parse_args()
+
+
+def prepare_visual_output_dir(visual_out_dir: Path, enabled: bool) -> None:
+    if not enabled:
+        return
+    if visual_out_dir.exists():
+        shutil.rmtree(visual_out_dir)
+    visual_out_dir.mkdir(parents=True, exist_ok=True)
 
 
 def main() -> int:
@@ -1354,8 +1848,7 @@ def main() -> int:
     out_dir = repo_root / args.out_dir
     visual_out_dir = repo_root / args.visual_out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    if args.visual_samples_per_dataset > 0:
-        visual_out_dir.mkdir(parents=True, exist_ok=True)
+    prepare_visual_output_dir(visual_out_dir, enabled=args.visual_samples_per_dataset > 0)
     configured_limit = (
         args.max_pdfs_per_dataset
         if args.max_pdfs_per_dataset is not None
@@ -1368,6 +1861,10 @@ def main() -> int:
         for dataset in manifest["datasets"]
         if not selected or dataset["slug"] in selected
     ]
+    try:
+        reference_extractors = parse_reference_extractors(args.reference_extractors)
+    except ValueError as error:
+        raise SystemExit(f"error: {error}") from error
 
     cli = build_cli(repo_root)
     generated_at = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -1381,6 +1878,8 @@ def main() -> int:
             repo_root=repo_root,
             visual_samples=max(args.visual_samples_per_dataset, 0),
             visual_out_dir=visual_out_dir,
+            reference_extractors=reference_extractors,
+            ocr_fallback=args.ocr_fallback,
         )
         for dataset in datasets
     ]

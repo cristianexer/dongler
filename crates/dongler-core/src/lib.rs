@@ -13,7 +13,10 @@ pub mod source;
 pub mod textual;
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use archive::ArchiveEngine;
 pub use csv::CsvEngine;
@@ -111,8 +114,211 @@ pub fn load_path_with_options(path: impl AsRef<Path>, options: ExtractOptions) -
         | InputFormat::LegacyEmail => Err(DonglerError::planned_format(format.as_str())),
     }?;
 
+    if ocr_fallback_enabled() {
+        apply_ocr_fallback(&mut document);
+    }
     apply_extract_options(&mut document, &options);
     Ok(document)
+}
+
+#[derive(Debug, Clone)]
+struct OcrFallbackConfig {
+    renderer: String,
+    engine: String,
+    temp_dir: PathBuf,
+}
+
+fn ocr_fallback_enabled() -> bool {
+    matches!(
+        std::env::var("DONGLER_OCR_FALLBACK")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn apply_ocr_fallback(document: &mut Document) {
+    if document.metadata.format != "pdf" {
+        return;
+    }
+    let Some(source_path) = document.metadata.source.as_deref().map(PathBuf::from) else {
+        return;
+    };
+    if !source_path.exists() {
+        return;
+    }
+    let config = ocr_fallback_config();
+    let mut changed = false;
+
+    for page in &mut document.pages {
+        if !page_needs_ocr_fallback(page) {
+            continue;
+        }
+
+        match ocr_pdf_page(&source_path, page.number, &config) {
+            Ok(Some(text)) => {
+                insert_ocr_text_block(page, text);
+                changed = true;
+            }
+            Ok(None) => {}
+            Err(message) => page.warnings.push(Warning {
+                code: "ocr.fallback".to_owned(),
+                severity: "warning".to_owned(),
+                message,
+                source_anchor: Some(SourceAnchor {
+                    page_number: page.number,
+                    pdf_object_ids: Vec::new(),
+                    bbox: page.bbox,
+                    extraction_method: "ocr_fallback".to_owned(),
+                }),
+            }),
+        }
+    }
+
+    if changed {
+        refresh_document_counts(document);
+    }
+}
+
+fn ocr_fallback_config() -> OcrFallbackConfig {
+    OcrFallbackConfig {
+        renderer: std::env::var("DONGLER_PDF_RENDERER").unwrap_or_else(|_| "pdftoppm".to_owned()),
+        engine: std::env::var("DONGLER_OCR_ENGINE").unwrap_or_else(|_| "tesseract".to_owned()),
+        temp_dir: std::env::var("DONGLER_OCR_TEMP_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::env::temp_dir())
+                    .join("target")
+                    .join("dongler-ocr")
+            }),
+    }
+}
+
+fn page_needs_ocr_fallback(page: &Page) -> bool {
+    !page.images.is_empty()
+        && !page.blocks.iter().any(|block| match block {
+            Block::Text(text) => !text.text.trim().is_empty(),
+            Block::Table(table) => {
+                table.headers.iter().any(|value| !value.trim().is_empty())
+                    || table
+                        .rows
+                        .iter()
+                        .flatten()
+                        .any(|value| !value.trim().is_empty())
+            }
+            Block::Figure(_) => false,
+        })
+}
+
+fn ocr_pdf_page(
+    source_path: &Path,
+    page_number: usize,
+    config: &OcrFallbackConfig,
+) -> std::result::Result<Option<String>, String> {
+    fs::create_dir_all(&config.temp_dir).map_err(|error| {
+        format!(
+            "could not create OCR temp dir {}: {error}",
+            config.temp_dir.display()
+        )
+    })?;
+    let prefix = config.temp_dir.join(format!(
+        "page-{}-{}-{}",
+        std::process::id(),
+        page_number,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let image_path = prefix.with_extension("png");
+    let page = page_number.to_string();
+    let render_output = Command::new(&config.renderer)
+        .args([
+            "-f",
+            page.as_str(),
+            "-l",
+            page.as_str(),
+            "-r",
+            "200",
+            "-png",
+            "-singlefile",
+        ])
+        .arg(source_path)
+        .arg(&prefix)
+        .output()
+        .map_err(|error| format!("could not run PDF renderer {}: {error}", config.renderer))?;
+
+    if !render_output.status.success() {
+        let stderr = String::from_utf8_lossy(&render_output.stderr);
+        return Err(format!(
+            "PDF renderer {} failed: {}",
+            config.renderer,
+            stderr.trim()
+        ));
+    }
+
+    let ocr_output = Command::new(&config.engine)
+        .arg(&image_path)
+        .arg("stdout")
+        .args(["--psm", "6"])
+        .output()
+        .map_err(|error| format!("could not run OCR engine {}: {error}", config.engine));
+    let _ = fs::remove_file(&image_path);
+
+    let ocr_output = ocr_output?;
+    if !ocr_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ocr_output.stderr);
+        return Err(format!(
+            "OCR engine {} failed: {}",
+            config.engine,
+            stderr.trim()
+        ));
+    }
+
+    let text = normalize_ocr_text(&String::from_utf8_lossy(&ocr_output.stdout));
+    Ok((!text.is_empty()).then_some(text))
+}
+
+fn normalize_ocr_text(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn insert_ocr_text_block(page: &mut Page, text: String) {
+    let bbox = page.bbox;
+    page.blocks.insert(
+        0,
+        Block::Text(TextBlock {
+            text: text.clone(),
+            kind: "ocr_text".to_owned(),
+            bbox,
+            lines: vec![Line {
+                text: text.clone(),
+                bbox,
+                spans: vec![Span {
+                    text,
+                    bbox,
+                    font: None,
+                    size: None,
+                }],
+            }],
+            source_anchors: vec![SourceAnchor {
+                page_number: page.number,
+                pdf_object_ids: Vec::new(),
+                bbox,
+                extraction_method: "ocr_fallback".to_owned(),
+            }],
+            confidence: Some(Confidence {
+                score: 0.55,
+                calibrated: false,
+            }),
+        }),
+    );
 }
 
 fn apply_extract_options(document: &mut Document, options: &ExtractOptions) {

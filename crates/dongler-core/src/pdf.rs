@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::engine::ExtractionEngine;
 use crate::error::{DonglerError, Result};
 use crate::ir::{
-    Asset, BBox, Block, Confidence, Document, ImageObject, Line, Metadata, Page, SourceAnchor,
-    Span, TableBlock, TableCell, TextBlock, Warning, SCHEMA_VERSION,
+    Asset, BBox, Block, Confidence, Document, FigureBlock, ImageObject, Line, Metadata, Page,
+    SourceAnchor, Span, TableBlock, TableCell, TextBlock, Warning, SCHEMA_VERSION,
 };
 use crate::source::Source;
 
@@ -68,6 +68,26 @@ struct DetectedTable {
 }
 
 #[derive(Debug, Clone)]
+struct TableRowCandidate {
+    line_index: usize,
+    cells: Vec<TextRun>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GraphicEdge {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScriptKind {
+    Superscript,
+    Subscript,
+}
+
+#[derive(Debug, Clone)]
 struct ColumnLayout<'a> {
     leading: Vec<&'a TextLine>,
     columns: Vec<Vec<&'a TextLine>>,
@@ -77,6 +97,7 @@ struct ColumnLayout<'a> {
 #[derive(Debug, Clone)]
 struct ContentExtraction {
     text_runs: Vec<TextRun>,
+    edges: Vec<GraphicEdge>,
     images: Vec<ImageObject>,
     assets: Vec<Asset>,
     warnings: Vec<Warning>,
@@ -85,7 +106,18 @@ struct ContentExtraction {
 #[derive(Debug, Clone, Default)]
 struct FontDecoder {
     cmap: HashMap<Vec<u8>, String>,
+    encoding: HashMap<u8, String>,
+    widths: HashMap<char, f32>,
     max_code_len: usize,
+}
+
+impl FontDecoder {
+    fn decode_byte(&self, byte: u8) -> String {
+        self.encoding
+            .get(&byte)
+            .cloned()
+            .unwrap_or_else(|| (byte as char).to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,26 +139,30 @@ struct ContentOp {
 #[derive(Debug, Clone)]
 struct GraphicsState {
     ctm: Matrix,
-    text_x: f32,
-    text_y: f32,
-    line_x: f32,
-    line_y: f32,
+    text_matrix: Matrix,
+    line_matrix: Matrix,
     font_name: Option<String>,
     font_size: f32,
     leading: f32,
+    char_spacing: f32,
+    word_spacing: f32,
+    horizontal_scaling: f32,
+    text_rise: f32,
 }
 
 impl Default for GraphicsState {
     fn default() -> Self {
         Self {
             ctm: Matrix::identity(),
-            text_x: 0.0,
-            text_y: 0.0,
-            line_x: 0.0,
-            line_y: 0.0,
+            text_matrix: Matrix::identity(),
+            line_matrix: Matrix::identity(),
             font_name: None,
             font_size: 12.0,
             leading: 12.0,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 1.0,
+            text_rise: 0.0,
         }
     }
 }
@@ -169,6 +205,14 @@ impl Matrix {
             self.a * x + self.c * y + self.e,
             self.b * x + self.d * y + self.f,
         )
+    }
+
+    fn translate(self, x: f32, y: f32) -> Self {
+        Self {
+            e: self.e + self.a * x + self.c * y,
+            f: self.f + self.b * x + self.d * y,
+            ..self
+        }
     }
 
     fn bbox(self) -> BBox {
@@ -281,6 +325,7 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
     let mut warnings = Vec::new();
     let mut extraction = ContentExtraction {
         text_runs: Vec::new(),
+        edges: Vec::new(),
         images: Vec::new(),
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -302,6 +347,7 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
                     object_map,
                 );
                 extraction.text_runs.append(&mut content.text_runs);
+                extraction.edges.append(&mut content.edges);
                 extraction.images.append(&mut content.images);
                 extraction.assets.append(&mut content.assets);
                 extraction.warnings.append(&mut content.warnings);
@@ -323,7 +369,10 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
 
     warnings.append(&mut extraction.warnings);
     let lines = group_text_runs(extraction.text_runs);
-    let blocks = build_blocks(seed.number, &lines);
+    let mut blocks = build_blocks(seed.number, &lines, &extraction.edges);
+    if blocks.is_empty() && !extraction.images.is_empty() {
+        blocks.extend(image_figure_blocks(seed.number, &extraction.images));
+    }
     let text = blocks
         .iter()
         .map(block_text)
@@ -361,8 +410,11 @@ fn interpret_content_stream(
 ) -> ContentExtraction {
     let mut state = GraphicsState::default();
     let mut graphics_stack = Vec::new();
+    let mut current_path_point: Option<(f32, f32)> = None;
+    let mut pending_edges = Vec::new();
     let mut extraction = ContentExtraction {
         text_runs: Vec::new(),
+        edges: Vec::new(),
         images: Vec::new(),
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -389,10 +441,8 @@ fn interpret_content_stream(
                 }
             }
             "BT" => {
-                state.text_x = 0.0;
-                state.text_y = 0.0;
-                state.line_x = 0.0;
-                state.line_y = 0.0;
+                state.text_matrix = Matrix::identity();
+                state.line_matrix = Matrix::identity();
             }
             "Tf" => {
                 if let [Operand::Name(name), Operand::Number(size)] = op.operands.as_slice() {
@@ -401,12 +451,36 @@ fn interpret_content_stream(
                     state.leading = *size * 1.2;
                 }
             }
+            "Tc" => {
+                if let Some(values) = numbers(&op.operands, 1) {
+                    state.char_spacing = values[0];
+                }
+            }
+            "Tw" => {
+                if let Some(values) = numbers(&op.operands, 1) {
+                    state.word_spacing = values[0];
+                }
+            }
+            "Tz" => {
+                if let Some(values) = numbers(&op.operands, 1) {
+                    state.horizontal_scaling = (values[0] / 100.0).max(0.01);
+                }
+            }
+            "TL" => {
+                if let Some(values) = numbers(&op.operands, 1) {
+                    state.leading = values[0];
+                }
+            }
+            "Ts" => {
+                if let Some(values) = numbers(&op.operands, 1) {
+                    state.text_rise = values[0];
+                }
+            }
             "Td" | "TD" => {
                 if let Some(values) = numbers(&op.operands, 2) {
-                    state.line_x += values[0];
-                    state.line_y += values[1];
-                    state.text_x = state.line_x;
-                    state.text_y = state.line_y;
+                    let next_line = state.line_matrix.translate(values[0], values[1]);
+                    state.line_matrix = next_line;
+                    state.text_matrix = next_line;
                     if op.operator == "TD" {
                         state.leading = -values[1];
                     }
@@ -414,46 +488,52 @@ fn interpret_content_stream(
             }
             "Tm" => {
                 if let Some(values) = numbers(&op.operands, 6) {
-                    state.line_x = values[4];
-                    state.line_y = values[5];
-                    state.text_x = values[4];
-                    state.text_y = values[5];
+                    let matrix = Matrix {
+                        a: values[0],
+                        b: values[1],
+                        c: values[2],
+                        d: values[3],
+                        e: values[4],
+                        f: values[5],
+                    };
+                    state.line_matrix = matrix;
+                    state.text_matrix = matrix;
                 }
             }
             "T*" => {
-                state.line_y -= state.leading;
-                state.text_x = state.line_x;
-                state.text_y = state.line_y;
+                move_to_next_text_line(&mut state);
             }
             "Tj" => {
                 if let Some(text) = first_text_operand(&op.operands, &state, fonts) {
-                    push_text_run(&mut extraction, &mut state, source_object_ids, text);
+                    push_text_run(&mut extraction, &mut state, source_object_ids, text, fonts);
                 }
             }
             "TJ" => {
                 if let Some(Operand::Array(items)) = op.operands.first() {
                     let text = text_from_array(items, &state, fonts);
-                    push_text_run(&mut extraction, &mut state, source_object_ids, text);
+                    push_text_run(&mut extraction, &mut state, source_object_ids, text, fonts);
                 }
             }
             "'" => {
-                state.line_y -= state.leading;
-                state.text_x = state.line_x;
-                state.text_y = state.line_y;
+                move_to_next_text_line(&mut state);
                 if let Some(text) = first_text_operand(&op.operands, &state, fonts) {
-                    push_text_run(&mut extraction, &mut state, source_object_ids, text);
+                    push_text_run(&mut extraction, &mut state, source_object_ids, text, fonts);
                 }
             }
             "\"" => {
-                state.line_y -= state.leading;
-                state.text_x = state.line_x;
-                state.text_y = state.line_y;
+                if let [Operand::Number(word_spacing), Operand::Number(char_spacing), ..] =
+                    op.operands.as_slice()
+                {
+                    state.word_spacing = *word_spacing;
+                    state.char_spacing = *char_spacing;
+                }
+                move_to_next_text_line(&mut state);
                 if let Some(text) = op
                     .operands
                     .last()
                     .and_then(|operand| operand_text(operand, &state, fonts))
                 {
-                    push_text_run(&mut extraction, &mut state, source_object_ids, text);
+                    push_text_run(&mut extraction, &mut state, source_object_ids, text, fonts);
                 }
             }
             "Do" => {
@@ -493,6 +573,35 @@ fn interpret_content_stream(
                     }
                 }
             }
+            "m" => {
+                if let Some(values) = numbers(&op.operands, 2) {
+                    current_path_point = Some((values[0], values[1]));
+                }
+            }
+            "l" => {
+                if let (Some(start), Some(values)) = (current_path_point, numbers(&op.operands, 2))
+                {
+                    let end = (values[0], values[1]);
+                    pending_edges.push(graphic_edge_from_points(state.ctm, start, end));
+                    current_path_point = Some(end);
+                }
+            }
+            "re" => {
+                if let Some(values) = numbers(&op.operands, 4) {
+                    pending_edges.extend(graphic_edges_from_rect(
+                        state.ctm, values[0], values[1], values[2], values[3],
+                    ));
+                    current_path_point = Some((values[0], values[1]));
+                }
+            }
+            "S" | "s" => {
+                extraction.edges.append(&mut pending_edges);
+                current_path_point = None;
+            }
+            "n" => {
+                pending_edges.clear();
+                current_path_point = None;
+            }
             _ => {}
         }
     }
@@ -500,24 +609,49 @@ fn interpret_content_stream(
     extraction
 }
 
+fn graphic_edge_from_points(matrix: Matrix, start: (f32, f32), end: (f32, f32)) -> GraphicEdge {
+    let (x0, y0) = matrix.point(start.0, start.1);
+    let (x1, y1) = matrix.point(end.0, end.1);
+    GraphicEdge { x0, y0, x1, y1 }
+}
+
+fn graphic_edges_from_rect(
+    matrix: Matrix,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Vec<GraphicEdge> {
+    let right = x + width;
+    let top = y + height;
+    vec![
+        graphic_edge_from_points(matrix, (x, y), (right, y)),
+        graphic_edge_from_points(matrix, (right, y), (right, top)),
+        graphic_edge_from_points(matrix, (right, top), (x, top)),
+        graphic_edge_from_points(matrix, (x, top), (x, y)),
+    ]
+}
+
+fn move_to_next_text_line(state: &mut GraphicsState) {
+    let next_line = state.line_matrix.translate(0.0, -state.leading);
+    state.line_matrix = next_line;
+    state.text_matrix = next_line;
+}
+
 fn push_text_run(
     extraction: &mut ContentExtraction,
     state: &mut GraphicsState,
     source_object_ids: &[String],
     text: String,
+    fonts: &HashMap<String, FontDecoder>,
 ) {
+    let advance = text_advance_width(&text, state, fonts);
     if text.trim().is_empty() {
+        state.text_matrix = state.text_matrix.translate(advance, 0.0);
         return;
     }
 
-    let (x, y) = state.ctm.point(state.text_x, state.text_y);
-    let width = (text.chars().count() as f32 * state.font_size * 0.5).max(state.font_size * 0.25);
-    let bbox = BBox {
-        x,
-        y,
-        width,
-        height: state.font_size,
-    };
+    let bbox = text_run_bbox(state, advance);
     extraction.text_runs.push(TextRun {
         text,
         bbox,
@@ -525,24 +659,70 @@ fn push_text_run(
         size: state.font_size,
         source_object_ids: source_object_ids.to_vec(),
     });
-    state.text_x += width;
+    state.text_matrix = state.text_matrix.translate(advance, 0.0);
 }
 
-fn build_blocks(page_number: usize, lines: &[TextLine]) -> Vec<Block> {
-    if let Some(detected_table) = detect_table(page_number, lines) {
-        let mut blocks = Vec::new();
-        let mut table_inserted = false;
-        for (line_index, line) in lines.iter().enumerate() {
-            if detected_table.line_indices.contains(&line_index) {
-                if !table_inserted {
-                    blocks.push(Block::Table(detected_table.table.clone()));
-                    table_inserted = true;
-                }
-            } else if let Some(block) = text_line_block(page_number, line) {
-                blocks.push(block);
-            }
-        }
-        return blocks;
+fn text_advance_width(
+    text: &str,
+    state: &GraphicsState,
+    fonts: &HashMap<String, FontDecoder>,
+) -> f32 {
+    let glyphs = text.chars().count() as f32;
+    if glyphs == 0.0 {
+        return 0.0;
+    }
+    let spaces = text.chars().filter(|character| *character == ' ').count() as f32;
+    let font = state
+        .font_name
+        .as_ref()
+        .and_then(|font_name| fonts.get(font_name));
+    let base = text
+        .chars()
+        .map(|character| {
+            font.and_then(|font| font.widths.get(&character).copied())
+                .map(|width| width / 1000.0 * state.font_size)
+                .unwrap_or(state.font_size * 0.5)
+        })
+        .sum::<f32>();
+    let spacing = glyphs * state.char_spacing + spaces * state.word_spacing;
+    ((base + spacing) * state.horizontal_scaling).max(0.0)
+}
+
+fn text_run_bbox(state: &GraphicsState, advance: f32) -> BBox {
+    let corners = [
+        (0.0, state.text_rise),
+        (advance, state.text_rise),
+        (0.0, state.text_rise + state.font_size),
+        (advance, state.text_rise + state.font_size),
+    ];
+    let points = corners
+        .into_iter()
+        .map(|(x, y)| {
+            let (text_x, text_y) = state.text_matrix.point(x, y);
+            state.ctm.point(text_x, text_y)
+        })
+        .collect::<Vec<_>>();
+    let min_x = points.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
+    let min_y = points.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_y = points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    BBox {
+        x: min_x,
+        y: min_y,
+        width: (max_x - min_x).max(state.font_size * 0.25),
+        height: (max_y - min_y).max(state.font_size * 0.25),
+    }
+}
+
+fn build_blocks(page_number: usize, lines: &[TextLine], edges: &[GraphicEdge]) -> Vec<Block> {
+    if let Some(detected_table) = detect_table(page_number, lines, edges) {
+        return build_blocks_with_table(page_number, lines, detected_table);
     }
 
     let split_lines = split_wide_text_lines(lines);
@@ -553,6 +733,74 @@ fn build_blocks(page_number: usize, lines: &[TextLine]) -> Vec<Block> {
     merge_wrapped_text_blocks(text_blocks)
         .into_iter()
         .map(Block::Text)
+        .collect()
+}
+
+fn build_blocks_with_table(
+    page_number: usize,
+    lines: &[TextLine],
+    detected_table: DetectedTable,
+) -> Vec<Block> {
+    let remaining_lines = lines
+        .iter()
+        .enumerate()
+        .filter(|(line_index, _)| !detected_table.line_indices.contains(line_index))
+        .map(|(_, line)| line.clone())
+        .collect::<Vec<_>>();
+    let split_lines = split_wide_text_lines(&remaining_lines);
+    let text_blocks = merge_wrapped_text_blocks(
+        text_lines_in_reading_order(&split_lines)
+            .into_iter()
+            .filter_map(|line| text_block_from_line(page_number, line))
+            .collect(),
+    );
+    let table_top = detected_table
+        .table
+        .bbox
+        .map(|bbox| bbox.y + bbox.height)
+        .unwrap_or(f32::NEG_INFINITY);
+    let mut blocks = Vec::new();
+    let mut table_inserted = false;
+
+    for text_block in text_blocks {
+        let block_top = text_block
+            .bbox
+            .map(|bbox| bbox.y + bbox.height)
+            .unwrap_or(f32::NEG_INFINITY);
+        if !table_inserted && block_top < table_top {
+            blocks.push(Block::Table(detected_table.table.clone()));
+            table_inserted = true;
+        }
+        blocks.push(Block::Text(text_block));
+    }
+
+    if !table_inserted {
+        blocks.push(Block::Table(detected_table.table));
+    }
+
+    blocks
+}
+
+fn image_figure_blocks(page_number: usize, images: &[ImageObject]) -> Vec<Block> {
+    images
+        .iter()
+        .map(|image| {
+            Block::Figure(FigureBlock {
+                alt_text: Some(format!("Image {}", image.id)),
+                caption: None,
+                bbox: image.bbox,
+                image_ref: Some(image.id.clone()),
+                source_anchors: vec![anchor(
+                    page_number,
+                    image.bbox,
+                    image.object_id.clone().into_iter().collect(),
+                )],
+                confidence: Some(Confidence {
+                    score: 0.6,
+                    calibrated: false,
+                }),
+            })
+        })
         .collect()
 }
 
@@ -580,16 +828,26 @@ fn split_text_line_at_wide_gap(
     }
     let mut runs = line.runs.clone();
     runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
-    if runs
+    let contains_math = runs
         .iter()
-        .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)))
-    {
+        .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)));
+    let tight_column_split_index = enable_tight_column_band
+        .then(|| tight_column_band_split_index_for_runs(&runs))
+        .flatten();
+    let largest_gap_split = largest_run_gap(&runs);
+    if contains_math && tight_column_split_index.is_none() {
         return None;
     }
-    let split_index = enable_tight_column_band
-        .then(|| right_column_band_split_index(&runs))
-        .flatten()
-        .or_else(|| largest_run_gap(&runs).map(|(split_index, _, _)| split_index))?;
+    let split_index = match (tight_column_split_index, largest_gap_split) {
+        (Some(tight_index), Some((wide_index, gap, x_jump)))
+            if prefers_wide_gap_before_tight_band(&runs, wide_index, tight_index, gap, x_jump) =>
+        {
+            wide_index
+        }
+        (Some(tight_index), _) => tight_index,
+        (None, Some((wide_index, _, _))) => wide_index,
+        (None, None) => return None,
+    };
     let left_runs = runs[..split_index].to_vec();
     let right_runs = runs[split_index..].to_vec();
     if left_runs.is_empty() || right_runs.is_empty() {
@@ -607,30 +865,41 @@ fn has_repeated_tight_column_band_evidence(lines: &[TextLine]) -> bool {
         .filter(|line| {
             let mut runs = line.runs.clone();
             runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
-            right_column_band_split_index(&runs).is_some()
+            tight_column_band_split_index_for_runs(&runs).is_some()
         })
         .take(2)
         .count()
         >= 2
 }
 
-fn right_column_band_split_index(runs: &[TextRun]) -> Option<usize> {
-    if runs.len() < 4 || runs.first()?.bbox.x > 120.0 {
+fn tight_column_band_split_index_for_runs(runs: &[TextRun]) -> Option<usize> {
+    let split_index = right_column_band_split_index(runs)?;
+    let contains_math = runs
+        .iter()
+        .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)));
+    if contains_math && !allows_math_column_split(&runs[..split_index]) {
         return None;
     }
-    if runs
-        .iter()
-        .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)))
-    {
+    Some(split_index)
+}
+
+fn right_column_band_split_index(runs: &[TextRun]) -> Option<usize> {
+    if runs.len() < 3 || runs.first()?.bbox.x > 120.0 {
         return None;
     }
 
     for index in 1..runs.len() {
-        let right_x = runs[index].bbox.x;
-        if !(300.0..=340.0).contains(&right_x) {
+        if index < 2 {
             continue;
         }
-        if index < 2 || runs.len() - index < 2 {
+        let algorithm_like_left = allows_math_column_split(&runs[..index]);
+        let right_x = runs[index].bbox.x;
+        let in_standard_column_band = (300.0..=340.0).contains(&right_x);
+        let in_algorithm_column_band = algorithm_like_left && (280.0..=340.0).contains(&right_x);
+        if !in_standard_column_band && !in_algorithm_column_band {
+            continue;
+        }
+        if runs.len() - index < 2 && !algorithm_like_left {
             continue;
         }
 
@@ -652,6 +921,20 @@ fn right_column_band_split_index(runs: &[TextRun]) -> Option<usize> {
     }
 
     None
+}
+
+fn allows_math_column_split(left_runs: &[TextRun]) -> bool {
+    let text = left_runs
+        .iter()
+        .map(|run| run.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = text.trim_start();
+    starts_with_numbered_step(trimmed)
+        || trimmed.starts_with("Require:")
+        || trimmed.starts_with("Ensure:")
+        || trimmed.starts_with("Algorithm ")
 }
 
 fn largest_run_gap(runs: &[TextRun]) -> Option<(usize, f32, f32)> {
@@ -682,6 +965,26 @@ fn is_likely_column_split_gap(left: &BBox, right: &BBox, gap: f32, x_jump: f32) 
 fn text_line_from_runs(runs: Vec<TextRun>) -> Option<TextLine> {
     let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
     Some(TextLine { runs, bbox })
+}
+
+fn prefers_wide_gap_before_tight_band(
+    runs: &[TextRun],
+    wide_index: usize,
+    tight_index: usize,
+    gap: f32,
+    x_jump: f32,
+) -> bool {
+    if wide_index == 0 || wide_index >= tight_index || tight_index > runs.len() {
+        return false;
+    }
+
+    let left = &runs[wide_index - 1].bbox;
+    let right = &runs[wide_index].bbox;
+    let stranded_right_glyphs = runs[wide_index..tight_index]
+        .iter()
+        .all(|run| run.bbox.x >= 280.0 && run.text.trim().chars().count() <= 2);
+
+    stranded_right_glyphs && left.x < 280.0 && right.x >= 280.0 && x_jump >= 110.0 && gap >= -160.0
 }
 
 fn text_lines_in_reading_order(lines: &[TextLine]) -> Vec<&TextLine> {
@@ -942,18 +1245,8 @@ fn average_line_height(lines: &[TextLine]) -> f32 {
     total / lines.len() as f32
 }
 
-fn text_line_block(page_number: usize, line: &TextLine) -> Option<Block> {
-    text_block_from_line(page_number, line).map(Block::Text)
-}
-
 fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock> {
-    let text = line
-        .runs
-        .iter()
-        .map(|run| run.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let text = text_from_line_runs(line);
     let text = clean_pdf_line_text(&text);
     if text.is_empty() {
         return None;
@@ -969,11 +1262,14 @@ fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock
             spans: line
                 .runs
                 .iter()
-                .map(|run| Span {
-                    text: run.text.clone(),
-                    bbox: Some(run.bbox),
-                    font: run.font.clone(),
-                    size: Some(run.size),
+                .filter_map(|run| {
+                    let text = clean_pdf_span_text(&run.text);
+                    (!text.is_empty()).then(|| Span {
+                        text,
+                        bbox: Some(run.bbox),
+                        font: run.font.clone(),
+                        size: Some(run.size),
+                    })
                 })
                 .collect(),
         }],
@@ -987,6 +1283,165 @@ fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock
             calibrated: false,
         }),
     })
+}
+
+fn text_from_line_runs(line: &TextLine) -> String {
+    let mut runs = line.runs.clone();
+    runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
+    if !line_has_math_script_context(&runs) {
+        return runs
+            .iter()
+            .map(|run| run.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+
+    let Some(baseline_y) = dominant_baseline_y(&runs) else {
+        return runs
+            .iter()
+            .map(|run| run.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+    };
+    let mut pieces: Vec<String> = Vec::new();
+
+    for run in runs {
+        let token = run.text.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        if let Some(script) = script_kind_for_run(&run, baseline_y) {
+            if let Some(previous) = pieces.last_mut() {
+                if can_attach_math_script(previous, token) {
+                    previous.push_str(&format_math_script(script, token));
+                    continue;
+                }
+            }
+        }
+
+        pieces.push(token.to_owned());
+    }
+
+    pieces.join(" ")
+}
+
+fn dominant_baseline_y(runs: &[TextRun]) -> Option<f32> {
+    let max_size = runs
+        .iter()
+        .map(|run| run.size)
+        .reduce(f32::max)
+        .filter(|size| *size > 0.0)?;
+    let mut baselines = runs
+        .iter()
+        .filter(|run| run.size >= max_size * 0.8)
+        .map(|run| run.bbox.y)
+        .collect::<Vec<_>>();
+    if baselines.is_empty() {
+        baselines = runs.iter().map(|run| run.bbox.y).collect();
+    }
+    baselines.sort_by(|left, right| left.total_cmp(right));
+    baselines.get(baselines.len() / 2).copied()
+}
+
+fn script_kind_for_run(run: &TextRun, baseline_y: f32) -> Option<ScriptKind> {
+    let delta = run.bbox.y - baseline_y;
+    let threshold = (run.size * 0.25).clamp(2.0, 4.0);
+    if delta >= threshold {
+        Some(ScriptKind::Superscript)
+    } else if delta <= -threshold {
+        Some(ScriptKind::Subscript)
+    } else {
+        None
+    }
+}
+
+fn line_has_math_script_context(runs: &[TextRun]) -> bool {
+    let joined = runs
+        .iter()
+        .map(|run| run.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    joined.chars().any(|character| {
+        matches!(
+            character,
+            '=' | '+'
+                | '−'
+                | '-'
+                | '×'
+                | '*'
+                | '^'
+                | '_'
+                | '∈'
+                | '≤'
+                | '≥'
+                | '≠'
+                | 'λ'
+                | 'θ'
+                | 'ρ'
+                | 'τ'
+                | 'Σ'
+                | '∑'
+        )
+    }) || runs.windows(2).any(|window| {
+        let left = window[0].text.trim();
+        let right = window[1].text.trim();
+        is_math_script_base(left) && is_math_script_text(right)
+    })
+}
+
+fn can_attach_math_script(previous: &str, token: &str) -> bool {
+    !previous.ends_with('^')
+        && !previous.ends_with('_')
+        && is_math_script_text(token)
+        && previous_has_math_script_base(previous)
+}
+
+fn is_math_script_base(token: &str) -> bool {
+    let trimmed = token.trim_matches(|character: char| matches!(character, '(' | '[' | '{'));
+    let count = trimmed.chars().count();
+    (count == 1 && trimmed.chars().any(|character| character.is_alphanumeric()))
+        || trimmed.starts_with('\\')
+}
+
+fn previous_has_math_script_base(previous: &str) -> bool {
+    let trimmed = previous.trim_end();
+    if trimmed.ends_with('}') || trimmed.ends_with(']') || trimmed.ends_with(')') {
+        return trimmed.contains('\\') || trimmed.contains('_') || trimmed.contains('^');
+    }
+    trimmed
+        .chars()
+        .rev()
+        .find(|character| !matches!(character, '*' | '\'' | '′'))
+        .is_some_and(|character| character.is_alphabetic() || character == '\\')
+}
+
+fn is_math_script_text(token: &str) -> bool {
+    let cleaned = token.trim_matches(|character: char| matches!(character, '(' | ')' | '[' | ']'));
+    !cleaned.is_empty()
+        && cleaned.chars().all(|character| {
+            character.is_alphanumeric()
+                || matches!(character, '+' | '-' | '−' | '=' | ',' | '.' | '\\')
+        })
+}
+
+fn format_math_script(kind: ScriptKind, token: &str) -> String {
+    let marker = match kind {
+        ScriptKind::Superscript => '^',
+        ScriptKind::Subscript => '_',
+    };
+    let cleaned = token.trim();
+    if cleaned.chars().count() == 1
+        || cleaned
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        format!("{marker}{cleaned}")
+    } else {
+        format!("{marker}{{{cleaned}}}")
+    }
 }
 
 fn merge_wrapped_text_blocks(blocks: Vec<TextBlock>) -> Vec<TextBlock> {
@@ -1019,6 +1474,9 @@ fn should_merge_text_blocks(previous: &TextBlock, next: &TextBlock) -> bool {
     if x_aligned && hyphenated {
         return true;
     }
+    if starts_with_numbered_step(&previous.text) && starts_with_numbered_step(&next.text) {
+        return false;
+    }
     if previous.kind != "paragraph" || next.kind != "paragraph" {
         return false;
     }
@@ -1050,6 +1508,19 @@ fn starts_with_lowercase(text: &str) -> bool {
         .is_some_and(|character| character.is_lowercase())
 }
 
+fn starts_with_numbered_step(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let digit_count = trimmed
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .count();
+    digit_count > 0
+        && trimmed
+            .chars()
+            .nth(digit_count)
+            .is_some_and(|character| matches!(character, ':' | '.'))
+}
+
 fn ends_sentence(text: &str) -> bool {
     text.trim_end()
         .chars()
@@ -1058,6 +1529,7 @@ fn ends_sentence(text: &str) -> bool {
 }
 
 fn clean_pdf_line_text(text: &str) -> String {
+    let text = repair_windows_1252_ellipsis_before_tokenizing(text);
     let tokens = text
         .split_whitespace()
         .map(normalize_pdf_token)
@@ -1124,6 +1596,10 @@ fn clean_pdf_line_text(text: &str) -> String {
     repair_pdf_math_notation(&repair_pdf_word_fragment_phrases(&cleaned.join(" ")))
 }
 
+fn clean_pdf_span_text(text: &str) -> String {
+    repair_pdf_math_notation(&normalize_pdf_token(text))
+}
+
 fn repair_pdf_word_fragment_phrases(text: &str) -> String {
     let mut repaired = text.to_owned();
     for (broken, fixed) in [
@@ -1163,17 +1639,66 @@ fn normalize_pdf_token(token: &str) -> String {
         .replace("â\u{80}\u{99}", "'")
         .replace("Â·", "·")
         .replace("â\u{84}\u{93}", "ℓ")
-        .replace("Î»", "λ")
+        .replace("Î“", "Γ")
+        .replace("Î˜", "Θ")
         .replace("Î›", "Λ")
+        .replace("Î\u{a0}", "Π")
+        .replace("Î£", "Σ")
+        .replace("Î¦", "Φ")
+        .replace("Î©", "Ω")
+        .replace("Î»", "λ")
         .replace("Ï\u{84}", "τ")
         .replace("Ã\u{97}", "×")
         .replace("â\u{86}\u{92}", "→")
         .replace("â\u{89}¥", "≥")
         .replace("â\u{89}¤", "≤")
         .replace("â\u{88}\u{88}", "∈")
+        .replace("â\u{88}\u{91}", "∑")
         .replace(['‘', '’'], "'")
         .replace(['“', '”'], "\"");
+    let normalized = repair_windows_1252_control_punctuation(&normalized);
     repair_embedded_pdf_control_glyphs(&normalized)
+}
+
+fn repair_windows_1252_control_punctuation(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+
+    for character in text.chars() {
+        match character {
+            '\u{80}' => output.push_str("EUR"),
+            '\u{82}' => output.push(','),
+            '\u{83}' => output.push('f'),
+            '\u{84}' => output.push('"'),
+            '\u{85}' => output.push_str("..."),
+            '\u{86}' => output.push_str("†"),
+            '\u{87}' => output.push_str("‡"),
+            '\u{88}' => output.push('^'),
+            '\u{89}' => output.push_str("‰"),
+            '\u{8a}' => output.push_str("Š"),
+            '\u{8b}' => output.push('<'),
+            '\u{8c}' => output.push_str("OE"),
+            '\u{8e}' => output.push_str("Ž"),
+            '\u{91}' | '\u{92}' => output.push('\''),
+            '\u{93}' | '\u{94}' => output.push('"'),
+            '\u{95}' => output.push('*'),
+            '\u{96}' => output.push('–'),
+            '\u{97}' => output.push('—'),
+            '\u{98}' => output.push('~'),
+            '\u{99}' => output.push_str("(TM)"),
+            '\u{9a}' => output.push_str("š"),
+            '\u{9b}' => output.push('>'),
+            '\u{9c}' => output.push_str("oe"),
+            '\u{9e}' => output.push_str("ž"),
+            '\u{9f}' => output.push_str("Ÿ"),
+            _ => output.push(character),
+        }
+    }
+
+    output
+}
+
+fn repair_windows_1252_ellipsis_before_tokenizing(text: &str) -> String {
+    text.replace('\u{85}', "...")
 }
 
 fn repair_embedded_pdf_control_glyphs(token: &str) -> String {
@@ -1244,8 +1769,15 @@ fn repair_pdf_math_notation(text: &str) -> String {
         return strip_pdf_control_glyphs(&normalized);
     }
 
+    let normalized = repair_combining_math_operator_sequences(&normalized);
     let symbols = replace_math_symbols(&normalized);
     strip_pdf_control_glyphs(&repair_math_subscript_spacing(&symbols))
+}
+
+fn repair_combining_math_operator_sequences(text: &str) -> String {
+    text.replace("\u{338} =", "≠")
+        .replace("\u{338}=", "≠")
+        .replace("=\u{338}", "≠")
 }
 
 fn looks_like_pdf_math_notation(text: &str) -> bool {
@@ -1262,6 +1794,7 @@ fn looks_like_pdf_math_notation(text: &str) -> bool {
                 | '≥'
                 | '∈'
                 | '∪'
+                | '∑'
                 | '∅'
                 | '·'
                 | '−'
@@ -1271,9 +1804,26 @@ fn looks_like_pdf_math_notation(text: &str) -> bool {
                 | '≠'
                 | '→'
         )
-    }) || text.contains("...")
+    }) || has_math_ellipsis_context(text)
         || text.contains("Fq")
         || text.contains(" 6 =")
+}
+
+fn has_math_ellipsis_context(text: &str) -> bool {
+    if !text.contains("...") {
+        return false;
+    }
+
+    let compact = text.split_whitespace().collect::<String>();
+    compact.contains(",...,")
+        || compact.contains("),...")
+        || compact.contains("...,(")
+        || text.chars().any(|character| {
+            matches!(
+                character,
+                '=' | '+' | '_' | '^' | '\\' | '∈' | '≤' | '≥' | '≠' | 'λ' | 'θ' | 'ρ' | 'τ'
+            )
+        })
 }
 
 fn replace_math_symbols(text: &str) -> String {
@@ -1287,11 +1837,16 @@ fn replace_math_symbols(text: &str) -> String {
     for character in collapsed.chars() {
         match character {
             '\u{3}' => output.push_str(r"\Lambda"),
+            'Γ' => output.push_str(r"\Gamma"),
+            'Θ' => output.push_str(r"\Theta"),
             'ℓ' => output.push_str(r"\ell"),
             'λ' => output.push_str(r"\lambda"),
             'Λ' => output.push_str(r"\Lambda"),
+            'Π' => output.push_str(r"\Pi"),
+            'Σ' => output.push_str(r"\Sigma"),
+            'Φ' => output.push_str(r"\Phi"),
+            'Ω' => output.push_str(r"\Omega"),
             'θ' => output.push_str(r"\theta"),
-            'Θ' => output.push_str(r"\Theta"),
             'ρ' => output.push_str(r"\rho"),
             'τ' => output.push_str(r"\tau"),
             '∆' | 'Δ' => output.push_str(r"\Delta"),
@@ -1299,6 +1854,7 @@ fn replace_math_symbols(text: &str) -> String {
             '≥' => output.push_str(r"\geq"),
             '∈' => output.push_str(r"\in"),
             '∪' => output.push_str(r"\cup"),
+            '∑' => output.push_str(r"\sum"),
             '∅' => output.push_str(r"\varnothing"),
             '−' => output.push('-'),
             '±' => output.push_str(r"\pm"),
@@ -1316,9 +1872,27 @@ fn replace_math_symbols(text: &str) -> String {
 }
 
 fn strip_pdf_control_glyphs(text: &str) -> String {
-    text.chars()
-        .filter(|character| !matches!(character, '\u{2}' | '\u{3}'))
-        .collect()
+    let mut sanitized = String::with_capacity(text.len());
+    let mut last_was_space = false;
+
+    for character in text.chars() {
+        if is_nonprinting_pdf_control(character) {
+            if !last_was_space {
+                sanitized.push(' ');
+                last_was_space = true;
+            }
+            continue;
+        }
+
+        sanitized.push(character);
+        last_was_space = character.is_whitespace();
+    }
+
+    sanitized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_nonprinting_pdf_control(character: char) -> bool {
+    character.is_control() && !matches!(character, '\n' | '\r' | '\t')
 }
 
 fn repair_math_subscript_spacing(text: &str) -> String {
@@ -1445,8 +2019,8 @@ fn format_math_subscript(subscript: &str) -> String {
 
 fn is_letter_fragment(token: &str) -> bool {
     let chars = token.chars().collect::<Vec<_>>();
-    matches!(chars.as_slice(), [character] if character.is_alphabetic())
-        || matches!(chars.as_slice(), [character, '-'] if character.is_alphabetic())
+    matches!(chars.as_slice(), [character] if character.is_ascii_alphabetic())
+        || matches!(chars.as_slice(), [character, '-'] if character.is_ascii_alphabetic())
 }
 
 fn is_word_piece(token: &str) -> bool {
@@ -1458,10 +2032,233 @@ fn is_joining_apostrophe(token: &str) -> bool {
 }
 
 fn is_joining_hyphen(token: &str) -> bool {
-    matches!(token, "-" | "‐" | "‑" | "–")
+    matches!(token, "-" | "‐" | "‑")
 }
 
-fn detect_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
+fn detect_table(
+    page_number: usize,
+    lines: &[TextLine],
+    edges: &[GraphicEdge],
+) -> Option<DetectedTable> {
+    detect_ruled_grid_table(page_number, lines, edges)
+        .or_else(|| detect_exact_run_table(page_number, lines))
+        .or_else(|| detect_implied_alignment_table(page_number, lines))
+}
+
+fn detect_ruled_grid_table(
+    page_number: usize,
+    lines: &[TextLine],
+    edges: &[GraphicEdge],
+) -> Option<DetectedTable> {
+    let verticals = grid_axis_values(edges, EdgeOrientation::Vertical);
+    let horizontals = grid_axis_values(edges, EdgeOrientation::Horizontal);
+    if verticals.len() < 2 || horizontals.len() < 2 {
+        return None;
+    }
+
+    let columns = verticals.len() - 1;
+    let rows = horizontals.len() - 1;
+    if columns < 2 || rows < 2 {
+        return None;
+    }
+    if !has_nearby_ruled_table_label(lines, &verticals, &horizontals)
+        && !has_multirow_ruled_grid_evidence(columns, rows)
+    {
+        return None;
+    }
+
+    let mut grid = vec![vec![String::new(); columns]; rows];
+    let mut cell_boxes = vec![vec![None; columns]; rows];
+    let mut line_indices = Vec::new();
+
+    for (line_index, line) in lines.iter().enumerate() {
+        let mut used_line = false;
+        for run in &line.runs {
+            let center_x = run.bbox.x + run.bbox.width / 2.0;
+            let center_y = run.bbox.y + run.bbox.height / 2.0;
+            let Some(column) = grid_column_for(center_x, &verticals) else {
+                continue;
+            };
+            let Some(row) = grid_row_for(center_y, &horizontals) else {
+                continue;
+            };
+            append_grid_cell_text(&mut grid[row][column], &run.text);
+            cell_boxes[row][column] = Some(
+                cell_boxes[row][column]
+                    .and_then(|bbox| union_boxes([bbox, run.bbox]))
+                    .unwrap_or(run.bbox),
+            );
+            used_line = true;
+        }
+        if used_line {
+            line_indices.push(line_index);
+        }
+    }
+
+    if grid
+        .iter()
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
+        .count()
+        < 3
+    {
+        return None;
+    }
+
+    let headers = grid[0].clone();
+    let body_rows = grid.iter().skip(1).cloned().collect::<Vec<_>>();
+    if headers.iter().all(|text| text.trim().is_empty())
+        || body_rows
+            .iter()
+            .flatten()
+            .all(|text| text.trim().is_empty())
+    {
+        return None;
+    }
+
+    let mut cells = Vec::new();
+    for column in 0..columns {
+        cells.push(TableCell {
+            row: 0,
+            column,
+            text: headers[column].clone(),
+            bbox: cell_boxes[0][column],
+            is_header: true,
+        });
+    }
+    for (body_index, row) in body_rows.iter().enumerate() {
+        for (column, text) in row.iter().enumerate() {
+            cells.push(TableCell {
+                row: body_index + 1,
+                column,
+                text: text.clone(),
+                bbox: cell_boxes[body_index + 1][column],
+                is_header: false,
+            });
+        }
+    }
+
+    let bbox = BBox {
+        x: *verticals.first()?,
+        y: *horizontals.first()?,
+        width: *verticals.last()? - *verticals.first()?,
+        height: *horizontals.last()? - *horizontals.first()?,
+    };
+
+    Some(DetectedTable {
+        table: TableBlock {
+            headers,
+            rows: body_rows,
+            caption: None,
+            bbox: Some(bbox),
+            cells,
+            source_anchors: vec![anchor(page_number, Some(bbox), Vec::new())],
+            confidence: Some(Confidence {
+                score: 0.7,
+                calibrated: false,
+            }),
+        },
+        line_indices,
+    })
+}
+
+fn has_nearby_ruled_table_label(
+    lines: &[TextLine],
+    verticals: &[f32],
+    horizontals: &[f32],
+) -> bool {
+    let Some(left) = verticals.first().copied() else {
+        return false;
+    };
+    let Some(right) = verticals.last().copied() else {
+        return false;
+    };
+    let Some(top) = horizontals.last().copied() else {
+        return false;
+    };
+
+    lines.iter().any(|line| {
+        let text = text_line_plain_text(line).to_ascii_lowercase();
+        text.starts_with("table")
+            && line.bbox.y >= top
+            && line.bbox.y <= top + 96.0
+            && line.bbox.x <= right + 24.0
+            && line.bbox.x + line.bbox.width >= left - 24.0
+    })
+}
+
+fn has_multirow_ruled_grid_evidence(columns: usize, rows: usize) -> bool {
+    columns >= 2 && rows >= 4
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeOrientation {
+    Horizontal,
+    Vertical,
+}
+
+fn grid_axis_values(edges: &[GraphicEdge], orientation: EdgeOrientation) -> Vec<f32> {
+    let mut values = edges
+        .iter()
+        .filter_map(|edge| match orientation {
+            EdgeOrientation::Horizontal if is_horizontal_edge(edge) => {
+                Some((edge.y0 + edge.y1) / 2.0)
+            }
+            EdgeOrientation::Vertical if is_vertical_edge(edge) => Some((edge.x0 + edge.x1) / 2.0),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    values.sort_by(f32::total_cmp);
+    dedup_axis_values(values, 2.0)
+}
+
+fn is_horizontal_edge(edge: &GraphicEdge) -> bool {
+    (edge.y0 - edge.y1).abs() <= 1.0 && (edge.x0 - edge.x1).abs() >= 12.0
+}
+
+fn is_vertical_edge(edge: &GraphicEdge) -> bool {
+    (edge.x0 - edge.x1).abs() <= 1.0 && (edge.y0 - edge.y1).abs() >= 12.0
+}
+
+fn dedup_axis_values(values: Vec<f32>, tolerance: f32) -> Vec<f32> {
+    let mut deduped: Vec<f32> = Vec::new();
+    for value in values {
+        if let Some(previous) = deduped.last_mut() {
+            if (value - *previous).abs() <= tolerance {
+                *previous = (*previous + value) / 2.0;
+                continue;
+            }
+        }
+        deduped.push(value);
+    }
+    deduped
+}
+
+fn grid_column_for(x: f32, verticals: &[f32]) -> Option<usize> {
+    verticals
+        .windows(2)
+        .position(|window| x >= window[0] - 1.0 && x <= window[1] + 1.0)
+}
+
+fn grid_row_for(y: f32, horizontals: &[f32]) -> Option<usize> {
+    let band = horizontals
+        .windows(2)
+        .position(|window| y >= window[0] - 1.0 && y <= window[1] + 1.0)?;
+    Some(horizontals.len().saturating_sub(2).saturating_sub(band))
+}
+
+fn append_grid_cell_text(target: &mut String, text: &str) {
+    let cleaned = clean_pdf_line_text(text);
+    if cleaned.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push(' ');
+    }
+    target.push_str(&cleaned);
+}
+
+fn detect_exact_run_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
     let candidate_lines = lines
         .iter()
         .enumerate()
@@ -1530,6 +2327,405 @@ fn detect_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable>
             .map(|(line_index, _)| *line_index)
             .collect(),
     })
+}
+
+fn detect_implied_alignment_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
+    let row_candidates = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(line_index, line)| {
+            let cells = implied_table_cells(line);
+            (cells.len() >= 3 && row_has_numeric_table_evidence(&cells))
+                .then_some(TableRowCandidate { line_index, cells })
+        })
+        .collect::<Vec<_>>();
+    let group = best_aligned_table_row_group(&row_candidates)?;
+    if !has_nearby_table_label(lines, &group) {
+        return None;
+    }
+    build_implied_alignment_table(page_number, lines, &group)
+}
+
+fn has_nearby_table_label(lines: &[TextLine], rows: &[TableRowCandidate]) -> bool {
+    let Some(first_row) = rows.first() else {
+        return false;
+    };
+    let first_y = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.y)
+        .reduce(f32::max)
+        .unwrap_or_default();
+    let table_left = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.x)
+        .reduce(f32::min)
+        .unwrap_or_default();
+    let table_right = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.x + cell.bbox.width)
+        .reduce(f32::max)
+        .unwrap_or_default();
+
+    lines.iter().any(|line| {
+        let text = text_line_plain_text(line).to_ascii_lowercase();
+        text.starts_with("table")
+            && line.bbox.y >= first_y
+            && line.bbox.y <= first_y + 96.0
+            && line.bbox.x <= table_right + 24.0
+            && line.bbox.x + line.bbox.width >= table_left - 24.0
+    })
+}
+
+fn implied_table_cells(line: &TextLine) -> Vec<TextRun> {
+    if line.runs.len() < 2 {
+        return line.runs.clone();
+    }
+
+    let mut runs = line.runs.clone();
+    runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
+    let threshold = implied_cell_gap_threshold(line);
+    let mut groups: Vec<Vec<TextRun>> = Vec::new();
+    let mut current: Vec<TextRun> = Vec::new();
+
+    for run in runs {
+        if let Some(previous) = current.last() {
+            let gap = run.bbox.x - (previous.bbox.x + previous.bbox.width);
+            if gap >= threshold {
+                groups.push(std::mem::take(&mut current));
+            }
+        }
+        current.push(run);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    groups
+        .into_iter()
+        .filter_map(|runs| text_run_from_cell_runs(&runs))
+        .collect()
+}
+
+fn implied_cell_gap_threshold(line: &TextLine) -> f32 {
+    let height = average_run_size(line).max(line.bbox.height);
+    (height * 1.5).clamp(10.0, 18.0)
+}
+
+fn text_run_from_cell_runs(runs: &[TextRun]) -> Option<TextRun> {
+    let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
+    let text = runs
+        .iter()
+        .map(|run| run.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = clean_pdf_line_text(&text);
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(TextRun {
+        text,
+        bbox,
+        font: runs.iter().find_map(|run| run.font.clone()),
+        size: runs.iter().map(|run| run.size).sum::<f32>() / runs.len() as f32,
+        source_object_ids: source_ids_for_runs(runs),
+    })
+}
+
+fn row_has_numeric_table_evidence(cells: &[TextRun]) -> bool {
+    cells.iter().skip(1).any(|cell| {
+        cell.text
+            .chars()
+            .any(|character| character.is_ascii_digit())
+    })
+}
+
+fn best_aligned_table_row_group(rows: &[TableRowCandidate]) -> Option<Vec<TableRowCandidate>> {
+    let mut best: Option<Vec<TableRowCandidate>> = None;
+    let mut current: Vec<TableRowCandidate> = Vec::new();
+
+    for row in rows {
+        if current.is_empty() {
+            current.push(row.clone());
+            continue;
+        }
+
+        let compatible = current
+            .first()
+            .is_some_and(|first| table_rows_align(first, row))
+            && current
+                .last()
+                .is_some_and(|previous| table_row_vertical_gap(previous, row) <= 28.0);
+        if compatible {
+            current.push(row.clone());
+        } else {
+            record_table_row_group(&mut best, &current);
+            current.clear();
+            current.push(row.clone());
+        }
+    }
+    record_table_row_group(&mut best, &current);
+    best
+}
+
+fn record_table_row_group(
+    best: &mut Option<Vec<TableRowCandidate>>,
+    candidate: &[TableRowCandidate],
+) {
+    if candidate.len() < 2 {
+        return;
+    }
+    let Some(width) = candidate.first().map(|row| row.cells.len()) else {
+        return;
+    };
+    if width < 3 {
+        return;
+    }
+    let score = candidate.len() * width;
+    let best_score = best
+        .as_ref()
+        .and_then(|rows| rows.first().map(|row| rows.len() * row.cells.len()))
+        .unwrap_or_default();
+    if score > best_score {
+        *best = Some(candidate.to_vec());
+    }
+}
+
+fn table_rows_align(first: &TableRowCandidate, next: &TableRowCandidate) -> bool {
+    first.cells.len() == next.cells.len()
+        && first
+            .cells
+            .iter()
+            .zip(&next.cells)
+            .all(|(left, right)| (left.bbox.x - right.bbox.x).abs() <= 14.0)
+}
+
+fn table_row_vertical_gap(previous: &TableRowCandidate, next: &TableRowCandidate) -> f32 {
+    let previous_y = previous
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.y)
+        .reduce(f32::max)
+        .unwrap_or_default();
+    let next_y = next
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.y)
+        .reduce(f32::max)
+        .unwrap_or_default();
+    (previous_y - next_y).abs()
+}
+
+fn build_implied_alignment_table(
+    page_number: usize,
+    lines: &[TextLine],
+    rows: &[TableRowCandidate],
+) -> Option<DetectedTable> {
+    let columns = rows.first()?.cells.len();
+    let bbox = union_boxes(
+        rows.iter()
+            .flat_map(|row| row.cells.iter().map(|cell| cell.bbox)),
+    )?;
+    let header = implied_table_header(lines, rows, columns);
+    let has_explicit_header = header.has_text();
+    let mut line_indices = rows.iter().map(|row| row.line_index).collect::<Vec<_>>();
+    line_indices.extend(header.line_indices.iter().copied());
+    line_indices.sort_unstable();
+    line_indices.dedup();
+
+    let (headers, body_rows, header_cells) = if has_explicit_header {
+        (
+            header
+                .cells
+                .iter()
+                .map(|cell| {
+                    cell.as_ref()
+                        .map(|cell| cell.text.clone())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>(),
+            rows.iter()
+                .map(|row| row.cells.iter().map(|cell| cell.text.clone()).collect())
+                .collect::<Vec<Vec<_>>>(),
+            header.cells,
+        )
+    } else {
+        (
+            rows.first()?
+                .cells
+                .iter()
+                .map(|cell| cell.text.clone())
+                .collect::<Vec<_>>(),
+            rows.iter()
+                .skip(1)
+                .map(|row| row.cells.iter().map(|cell| cell.text.clone()).collect())
+                .collect::<Vec<Vec<_>>>(),
+            rows.first()?.cells.iter().cloned().map(Some).collect(),
+        )
+    };
+
+    let mut cells = Vec::new();
+    for (column, cell) in header_cells.into_iter().enumerate() {
+        let text = headers.get(column).cloned().unwrap_or_default();
+        cells.push(TableCell {
+            row: 0,
+            column,
+            text,
+            bbox: cell.map(|cell| cell.bbox),
+            is_header: true,
+        });
+    }
+    for (row_index, row) in rows.iter().enumerate() {
+        let table_row = if has_explicit_header {
+            row_index + 1
+        } else {
+            row_index
+        };
+        if !has_explicit_header && row_index == 0 {
+            continue;
+        }
+        for (column, cell) in row.cells.iter().enumerate() {
+            cells.push(TableCell {
+                row: table_row,
+                column,
+                text: cell.text.clone(),
+                bbox: Some(cell.bbox),
+                is_header: false,
+            });
+        }
+    }
+
+    Some(DetectedTable {
+        table: TableBlock {
+            headers,
+            rows: body_rows,
+            caption: None,
+            bbox: Some(bbox),
+            cells,
+            source_anchors: vec![anchor(page_number, Some(bbox), Vec::new())],
+            confidence: Some(Confidence {
+                score: 0.68,
+                calibrated: false,
+            }),
+        },
+        line_indices,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ImpliedTableHeader {
+    cells: Vec<Option<TextRun>>,
+    line_indices: Vec<usize>,
+}
+
+impl ImpliedTableHeader {
+    fn has_text(&self) -> bool {
+        self.cells
+            .iter()
+            .any(|cell| cell.as_ref().is_some_and(|cell| !cell.text.is_empty()))
+    }
+}
+
+fn implied_table_header(
+    lines: &[TextLine],
+    rows: &[TableRowCandidate],
+    columns: usize,
+) -> ImpliedTableHeader {
+    let mut header = ImpliedTableHeader {
+        cells: vec![None; columns],
+        line_indices: Vec::new(),
+    };
+    let Some(first_row) = rows.first() else {
+        return header;
+    };
+    let first_y = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.y)
+        .reduce(f32::max)
+        .unwrap_or_default();
+    let table_left = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.x)
+        .reduce(f32::min)
+        .unwrap_or_default();
+    let table_right = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.x + cell.bbox.width)
+        .reduce(f32::max)
+        .unwrap_or_default();
+    let column_refs = first_row
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.x)
+        .collect::<Vec<_>>();
+
+    let mut candidates = lines
+        .iter()
+        .enumerate()
+        .filter(|(line_index, line)| {
+            !rows.iter().any(|row| row.line_index == *line_index)
+                && line.bbox.y > first_y
+                && line.bbox.y <= first_y + 80.0
+                && line.bbox.x <= table_right + 12.0
+                && line.bbox.x + line.bbox.width >= table_left - 12.0
+                && !text_line_plain_text(line)
+                    .to_ascii_lowercase()
+                    .starts_with("table ")
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.1.bbox.y.total_cmp(&left.1.bbox.y));
+
+    for (line_index, line) in candidates {
+        let mut used_line = false;
+        for cell in implied_table_cells(line) {
+            if cell.text.chars().count() > 40 {
+                continue;
+            }
+            let Some(column) = nearest_table_column(&cell, &column_refs) else {
+                continue;
+            };
+            append_header_cell(&mut header.cells[column], cell);
+            used_line = true;
+        }
+        if used_line {
+            header.line_indices.push(line_index);
+        }
+    }
+
+    header
+}
+
+fn nearest_table_column(cell: &TextRun, column_refs: &[f32]) -> Option<usize> {
+    let (column, distance) = column_refs
+        .iter()
+        .enumerate()
+        .map(|(index, x)| (index, (cell.bbox.x - *x).abs()))
+        .min_by(|left, right| left.1.total_cmp(&right.1))?;
+    (distance <= 24.0).then_some(column)
+}
+
+fn append_header_cell(target: &mut Option<TextRun>, fragment: TextRun) {
+    if let Some(existing) = target {
+        if !existing.text.is_empty() {
+            existing.text.push(' ');
+        }
+        existing.text.push_str(&fragment.text);
+        existing.bbox = union_boxes([existing.bbox, fragment.bbox]).unwrap_or(existing.bbox);
+        for id in fragment.source_object_ids {
+            if !existing.source_object_ids.contains(&id) {
+                existing.source_object_ids.push(id);
+            }
+        }
+    } else {
+        *target = Some(fragment);
+    }
 }
 
 fn has_table_evidence(candidate_lines: &[(usize, &TextLine)]) -> bool {
@@ -1975,20 +3171,156 @@ fn decode_stream_object(object: &PdfObject) -> Result<Option<Vec<u8>>> {
     let mut stream = object.body[stream_marker + b"stream".len()..end_marker].to_vec();
     trim_stream_edges(&mut stream);
 
-    let compact_dict = dict.split_whitespace().collect::<String>();
-    if compact_dict.contains("/Filter/FlateDecode")
-        || compact_dict.contains("/Filter[/FlateDecode")
-        || compact_dict.contains("/Filter[/FlateDecode]")
-    {
-        let mut decoder = ZlibDecoder::new(stream.as_slice());
-        let mut decoded = Vec::new();
-        decoder
-            .read_to_end(&mut decoded)
-            .map_err(|error| DonglerError::pdf(format!("FlateDecode failed: {error}")))?;
-        Ok(Some(decoded))
-    } else {
-        Ok(Some(stream))
+    for filter in stream_filters(&dict) {
+        stream = decode_stream_filter(&filter, &stream)?;
     }
+    Ok(Some(stream))
+}
+
+fn decode_stream_filter(filter: &str, stream: &[u8]) -> Result<Vec<u8>> {
+    match filter {
+        "FlateDecode" | "Fl" => {
+            let mut decoder = ZlibDecoder::new(stream);
+            let mut decoded = Vec::new();
+            decoder
+                .read_to_end(&mut decoded)
+                .map_err(|error| DonglerError::pdf(format!("FlateDecode failed: {error}")))?;
+            Ok(decoded)
+        }
+        "ASCII85Decode" | "A85" => ascii85_decode(stream),
+        other => Err(DonglerError::pdf(format!(
+            "unsupported stream filter: {other}"
+        ))),
+    }
+}
+
+fn stream_filters(dict: &str) -> Vec<String> {
+    let Some(mut index) = dict.find("/Filter").map(|index| index + "/Filter".len()) else {
+        return Vec::new();
+    };
+    let bytes = dict.as_bytes();
+    skip_pdf_whitespace(bytes, &mut index);
+    if bytes.get(index) == Some(&b'[') {
+        index += 1;
+        let mut filters = Vec::new();
+        while index < bytes.len() && bytes[index] != b']' {
+            skip_pdf_whitespace(bytes, &mut index);
+            if bytes.get(index) == Some(&b']') {
+                break;
+            }
+            if bytes.get(index) == Some(&b'/') {
+                index += 1;
+                let start = index;
+                while index < bytes.len() && !is_pdf_name_delimiter(bytes[index]) {
+                    index += 1;
+                }
+                if start < index {
+                    filters.push(dict[start..index].to_owned());
+                }
+            } else {
+                index += 1;
+            }
+        }
+        filters
+    } else if bytes.get(index) == Some(&b'/') {
+        index += 1;
+        let start = index;
+        while index < bytes.len() && !is_pdf_name_delimiter(bytes[index]) {
+            index += 1;
+        }
+        (start < index)
+            .then(|| vec![dict[start..index].to_owned()])
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+fn skip_pdf_whitespace(bytes: &[u8], index: &mut usize) {
+    while bytes
+        .get(*index)
+        .is_some_and(|byte| matches!(byte, b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' '))
+    {
+        *index += 1;
+    }
+}
+
+fn is_pdf_name_delimiter(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'\0'
+            | b'\t'
+            | b'\n'
+            | b'\x0c'
+            | b'\r'
+            | b' '
+            | b'('
+            | b')'
+            | b'<'
+            | b'>'
+            | b'['
+            | b']'
+            | b'{'
+            | b'}'
+            | b'/'
+            | b'%'
+    )
+}
+
+fn ascii85_decode(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut group = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match byte {
+            b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' ' => {}
+            b'<' if bytes.get(index + 1) == Some(&b'~') => {
+                index += 1;
+            }
+            b'~' if bytes.get(index + 1) == Some(&b'>') => break,
+            b'z' if group.is_empty() => output.extend_from_slice(&[0, 0, 0, 0]),
+            b'!'..=b'u' => {
+                group.push(byte - b'!');
+                if group.len() == 5 {
+                    output.extend_from_slice(&ascii85_group_to_bytes(&group)?);
+                    group.clear();
+                }
+            }
+            _ => {
+                return Err(DonglerError::pdf(format!(
+                    "ASCII85Decode failed: invalid byte 0x{byte:02x}"
+                )));
+            }
+        }
+        index += 1;
+    }
+
+    if !group.is_empty() {
+        if group.len() == 1 {
+            return Err(DonglerError::pdf(
+                "ASCII85Decode failed: dangling single digit",
+            ));
+        }
+        let output_len = group.len() - 1;
+        while group.len() < 5 {
+            group.push(b'u' - b'!');
+        }
+        output.extend_from_slice(&ascii85_group_to_bytes(&group)?[..output_len]);
+    }
+
+    Ok(output)
+}
+
+fn ascii85_group_to_bytes(group: &[u8]) -> Result<[u8; 4]> {
+    let mut value = 0u64;
+    for digit in group {
+        value = value * 85 + u64::from(*digit);
+    }
+    if value > u64::from(u32::MAX) {
+        return Err(DonglerError::pdf("ASCII85Decode failed: invalid group"));
+    }
+    Ok((value as u32).to_be_bytes())
 }
 
 fn trim_stream_edges(stream: &mut Vec<u8>) {
@@ -2090,26 +3422,146 @@ fn resolve_named_resource_refs(
 
 fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontDecoder {
     let font_body = lossy(&font.body);
+    let encoding = font_encoding_differences(&font_body, object_map);
+    let widths = font_widths(&font_body, &encoding);
     let Some(to_unicode_ref) = parse_refs_after_key(&font_body, "/ToUnicode")
         .into_iter()
         .next()
     else {
-        return FontDecoder::default();
+        return FontDecoder {
+            cmap: HashMap::new(),
+            encoding,
+            widths,
+            max_code_len: 1,
+        };
     };
     let Some(to_unicode) = object_map.get(&(to_unicode_ref as u32)) else {
-        return FontDecoder::default();
+        return FontDecoder {
+            cmap: HashMap::new(),
+            encoding,
+            widths,
+            max_code_len: 1,
+        };
     };
     let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode) else {
-        return FontDecoder::default();
+        return FontDecoder {
+            cmap: HashMap::new(),
+            encoding,
+            widths,
+            max_code_len: 1,
+        };
     };
 
-    parse_to_unicode_cmap(&lossy(&cmap_stream))
+    let mut decoder = parse_to_unicode_cmap(&lossy(&cmap_stream));
+    decoder.encoding = encoding;
+    decoder.widths = widths;
+    decoder
+}
+
+fn font_widths(font_body: &str, encoding: &HashMap<u8, String>) -> HashMap<char, f32> {
+    let Some(first_char) = parse_number_after(font_body, "/FirstChar").map(|value| value as u8)
+    else {
+        return HashMap::new();
+    };
+    let Some(widths) = parse_number_array_after(font_body, "/Widths") else {
+        return HashMap::new();
+    };
+
+    widths
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, width)| {
+            let code = first_char.wrapping_add(index as u8);
+            let text = encoding
+                .get(&code)
+                .cloned()
+                .unwrap_or_else(|| (code as char).to_string());
+            let mut chars = text.chars();
+            let character = chars.next()?;
+            chars.next().is_none().then_some((character, width))
+        })
+        .collect()
+}
+
+fn font_encoding_differences(
+    font_body: &str,
+    object_map: &HashMap<u32, PdfObject>,
+) -> HashMap<u8, String> {
+    if let Some(encoding_ref) = parse_direct_ref_after_key(font_body, "/Encoding") {
+        if let Some(object) = object_map.get(&(encoding_ref as u32)) {
+            let differences = parse_encoding_differences(&lossy(&object.body));
+            if !differences.is_empty() {
+                return differences;
+            }
+        }
+    }
+    parse_encoding_differences(font_body)
+}
+
+fn parse_encoding_differences(text: &str) -> HashMap<u8, String> {
+    let Some(start) = text.find("/Differences") else {
+        return HashMap::new();
+    };
+    let rest = &text[start + "/Differences".len()..];
+    let Some(open) = rest.find('[') else {
+        return HashMap::new();
+    };
+    let Some(close) = matching_array_close(rest, open) else {
+        return HashMap::new();
+    };
+    let mut parser = ContentParser::new(rest[open..=close].as_bytes());
+    let Some(ContentToken::Operand(Operand::Array(items))) = parser.next_operand_or_operator()
+    else {
+        return HashMap::new();
+    };
+
+    let mut differences = HashMap::new();
+    let mut code: Option<u16> = None;
+    for item in items {
+        match item {
+            Operand::Number(value) if value >= 0.0 => {
+                code = Some(value as u16);
+            }
+            Operand::Name(name) => {
+                let Some(current_code) = code else {
+                    continue;
+                };
+                if current_code <= u16::from(u8::MAX) {
+                    if let Some(text) = glyph_name_to_text(&name) {
+                        differences.insert(current_code as u8, text);
+                    }
+                }
+                code = current_code.checked_add(1);
+            }
+            _ => {}
+        }
+    }
+    differences
+}
+
+fn matching_array_close(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, byte) in text.as_bytes().iter().enumerate().skip(open) {
+        match byte {
+            b'[' => depth += 1,
+            b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
     let mut cmap = HashMap::new();
     let mut in_bfchar = false;
     let mut in_bfrange = false;
+    let mut bfrange_array_entry = String::new();
+    let mut bfrange_array_depth = 0i32;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -2128,9 +3580,36 @@ fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
             }
             "endbfrange" => {
                 in_bfrange = false;
+                bfrange_array_entry.clear();
+                bfrange_array_depth = 0;
                 continue;
             }
             _ => {}
+        }
+
+        if in_bfrange {
+            if bfrange_array_depth > 0 {
+                bfrange_array_entry.push(' ');
+                bfrange_array_entry.push_str(trimmed);
+                bfrange_array_depth += bracket_delta(trimmed);
+                if bfrange_array_depth <= 0 {
+                    add_bfrange_entry(&mut cmap, &bfrange_array_entry);
+                    bfrange_array_entry.clear();
+                    bfrange_array_depth = 0;
+                }
+                continue;
+            }
+
+            let depth = bracket_delta(trimmed);
+            if depth > 0 {
+                bfrange_array_entry.clear();
+                bfrange_array_entry.push_str(trimmed);
+                bfrange_array_depth = depth;
+                continue;
+            }
+
+            add_bfrange_entry(&mut cmap, trimmed);
+            continue;
         }
 
         let hexes = hex_strings_in_line(trimmed);
@@ -2139,13 +3618,36 @@ fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
                 hexes[0].clone(),
                 cmap_text_for_mapping(&hexes[0], &hexes[1]),
             );
-        } else if in_bfrange && hexes.len() >= 3 {
-            add_bfrange(&mut cmap, &hexes);
         }
     }
 
     let max_code_len = cmap.keys().map(Vec::len).max().unwrap_or(1);
-    FontDecoder { cmap, max_code_len }
+    FontDecoder {
+        cmap,
+        encoding: HashMap::new(),
+        widths: HashMap::new(),
+        max_code_len,
+    }
+}
+
+fn bracket_delta(text: &str) -> i32 {
+    text.chars().fold(0, |depth, character| match character {
+        '[' => depth + 1,
+        ']' => depth - 1,
+        _ => depth,
+    })
+}
+
+fn add_bfrange_entry(cmap: &mut HashMap<Vec<u8>, String>, line: &str) {
+    let hexes = hex_strings_in_line(line);
+    if hexes.len() < 3 {
+        return;
+    }
+    if line.contains('[') {
+        add_bfrange_array(cmap, &hexes);
+    } else {
+        add_bfrange(cmap, &hexes);
+    }
 }
 
 fn add_bfrange(cmap: &mut HashMap<Vec<u8>, String>, hexes: &[Vec<u8>]) {
@@ -2170,7 +3672,30 @@ fn add_bfrange(cmap: &mut HashMap<Vec<u8>, String>, hexes: &[Vec<u8>]) {
     }
 }
 
+fn add_bfrange_array(cmap: &mut HashMap<Vec<u8>, String>, hexes: &[Vec<u8>]) {
+    let Some(start) = hex_to_u32(&hexes[0]) else {
+        return;
+    };
+    let Some(end) = hex_to_u32(&hexes[1]) else {
+        return;
+    };
+    let source_len = hexes[0].len();
+    let range_len = end.saturating_sub(start).saturating_add(1) as usize;
+
+    for (offset, destination) in hexes.iter().skip(2).take(range_len.min(512)).enumerate() {
+        let source = start + offset as u32;
+        let source_bytes = number_to_be_bytes(source, source_len);
+        cmap.insert(
+            source_bytes.clone(),
+            cmap_text_for_mapping(&source_bytes, destination),
+        );
+    }
+}
+
 fn cmap_text_for_mapping(source: &[u8], destination: &[u8]) -> String {
+    if destination.len() > 2 {
+        return utf16be_hex_to_string(destination);
+    }
     let Some(source_code) = hex_to_u32(source) else {
         return utf16be_hex_to_string(destination);
     };
@@ -2411,6 +3936,9 @@ fn decode_pdf_text(bytes: &[u8], font: Option<&FontDecoder>) -> String {
         if !font.cmap.is_empty() {
             return decode_with_cmap(bytes, font);
         }
+        if !font.encoding.is_empty() {
+            return bytes.iter().map(|byte| font.decode_byte(*byte)).collect();
+        }
     }
 
     if bytes.starts_with(&[0xfe, 0xff]) {
@@ -2440,12 +3968,139 @@ fn decode_with_cmap(bytes: &[u8], font: &FontDecoder) -> String {
             }
         }
         if !matched {
-            output.push(bytes[index] as char);
+            output.push_str(&font.decode_byte(bytes[index]));
             index += 1;
         }
     }
 
     output
+}
+
+fn glyph_name_to_text(name: &str) -> Option<String> {
+    let text = match name {
+        "space" => " ",
+        "exclam" => "!",
+        "quotedbl" => "\"",
+        "numbersign" => "#",
+        "dollar" => "$",
+        "percent" => "%",
+        "ampersand" => "&",
+        "quotesingle" | "quoteright" | "quoteleft" => "'",
+        "parenleft" | "parenleftbig" | "parenleftBig" | "parenleftbigg" | "parenleftBigg" => "(",
+        "parenright" | "parenrightbig" | "parenrightBig" | "parenrightbigg" | "parenrightBigg" => {
+            ")"
+        }
+        "asterisk" | "asteriskmath" => "*",
+        "plus" => "+",
+        "comma" => ",",
+        "hyphen" => "-",
+        "period" => ".",
+        "slash" => "/",
+        "zero" => "0",
+        "one" => "1",
+        "two" => "2",
+        "three" => "3",
+        "four" => "4",
+        "five" => "5",
+        "six" => "6",
+        "seven" => "7",
+        "eight" => "8",
+        "nine" => "9",
+        "colon" => ":",
+        "semicolon" => ";",
+        "less" => "<",
+        "equal" => "=",
+        "greater" => ">",
+        "question" => "?",
+        "at" => "@",
+        "bracketleft" => "[",
+        "backslash" => "\\",
+        "bracketright" => "]",
+        "circumflex" | "hatwide" | "hatwider" | "hatwidest" => "^",
+        "underscore" => "_",
+        "braceleft" | "braceleftBig" | "braceleftBigg" | "bracelefttp" | "braceleftbt"
+        | "braceleftmid" => "{",
+        "bar" | "vextendsingle" | "braceex" => "|",
+        "braceright" | "bracerightBig" => "}",
+        "tilde" | "tildewide" => "~",
+        "ff" => "ff",
+        "fi" => "fi",
+        "fl" => "fl",
+        "ffi" => "ffi",
+        "ffl" => "ffl",
+        "Gamma" => "Γ",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Phi" => "Φ",
+        "Omega" => "Ω",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ε",
+        "zeta" => "ζ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "pi" | "pi1" => "π",
+        "rho" => "ρ",
+        "sigma" => "σ",
+        "tau" => "τ",
+        "phi" => "φ",
+        "chi" => "χ",
+        "omega" => "ω",
+        "partialdiff" => "∂",
+        "minus" => "−",
+        "periodcentered" => "·",
+        "multiply" => "×",
+        "plusminus" => "±",
+        "circlemultiply" => "⊗",
+        "openbullet" | "bullet" => "•",
+        "lessequal" => "≤",
+        "greaterequal" => "≥",
+        "similar" => "∼",
+        "arrowright" => "→",
+        "mapsto" => "↦",
+        "prime" => "′",
+        "infinity" => "∞",
+        "element" => "∈",
+        "universal" => "∀",
+        "union" | "uniontext" | "uniondisplay" => "∪",
+        "intersection" | "intersectiontext" | "intersectiondisplay" => "∩",
+        "reflexsubset" => "⊇",
+        "reflexsuperset" => "⊆",
+        "summationtext" | "summationdisplay" => "∑",
+        "productdisplay" => "∏",
+        "integraldisplay" => "∫",
+        "circleplusdisplay" => "⊕",
+        "unionsqdisplay" => "⊔",
+        "negationslash" => "̸",
+        _ if name.chars().count() == 1 => name,
+        _ => return unicode_glyph_name_to_text(name),
+    };
+    Some(text.to_owned())
+}
+
+fn unicode_glyph_name_to_text(name: &str) -> Option<String> {
+    if let Some(hex) = name.strip_prefix("uni") {
+        if hex.len() >= 4 && hex.len() % 4 == 0 {
+            let mut output = String::new();
+            for chunk in hex.as_bytes().chunks(4) {
+                let chunk = std::str::from_utf8(chunk).ok()?;
+                let code = u32::from_str_radix(chunk, 16).ok()?;
+                output.push(char::from_u32(code)?);
+            }
+            return Some(output);
+        }
+    }
+    if let Some(hex) = name.strip_prefix('u') {
+        if (4..=6).contains(&hex.len()) {
+            let code = u32::from_str_radix(hex, 16).ok()?;
+            return char::from_u32(code).map(|character| character.to_string());
+        }
+    }
+    None
 }
 
 fn numbers(operands: &[Operand], count: usize) -> Option<Vec<f32>> {
@@ -2486,8 +4141,12 @@ fn classify_text_line(text: &str) -> String {
 }
 
 fn source_ids_for_line(line: &TextLine) -> Vec<String> {
+    source_ids_for_runs(&line.runs)
+}
+
+fn source_ids_for_runs(runs: &[TextRun]) -> Vec<String> {
     let mut ids = Vec::new();
-    for run in &line.runs {
+    for run in runs {
         for id in &run.source_object_ids {
             if !ids.contains(id) {
                 ids.push(id.clone());
@@ -2512,6 +4171,48 @@ fn warning(code: &str, severity: &str, message: &str, page_number: Option<usize>
         severity: severity.to_owned(),
         message: message.to_owned(),
         source_anchor: page_number.map(|page_number| anchor(page_number, None, Vec::new())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_from_line_runs_does_not_treat_slash_prose_page_number_as_script() {
+        let line = TextLine {
+            runs: vec![
+                test_run("Art Cutting / Bates Technical College", 72.0, 720.0, 12.0),
+                test_run("24", 300.0, 722.0, 8.0),
+                test_run("Core Competencies", 315.0, 720.0, 12.0),
+            ],
+            bbox: BBox {
+                x: 72.0,
+                y: 720.0,
+                width: 360.0,
+                height: 12.0,
+            },
+        };
+
+        assert_eq!(
+            text_from_line_runs(&line),
+            "Art Cutting / Bates Technical College 24 Core Competencies"
+        );
+    }
+
+    fn test_run(text: &str, x: f32, y: f32, size: f32) -> TextRun {
+        TextRun {
+            text: text.to_owned(),
+            bbox: BBox {
+                x,
+                y,
+                width: text.len() as f32 * size * 0.4,
+                height: size,
+            },
+            font: None,
+            size,
+            source_object_ids: Vec::new(),
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +17,19 @@ def load_runner():
 def load_downloader():
     path = Path(__file__).resolve().parents[2] / "scripts" / "download-benchmark-data.py"
     spec = importlib.util.spec_from_file_location("download_benchmark_data", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_visual_renderer():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "render-extraction-comparison.py"
+    )
+    spec = importlib.util.spec_from_file_location("render_extraction_comparison", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -334,6 +348,350 @@ def test_olmocr_unit_tests_score_table_neighbors_from_ir_cells(tmp_path):
     ]
 
     assert runner.olmocr_unit_pass_rate(tests, json_out) == 0.5
+
+
+def test_olmocr_unit_check_report_records_failed_checks_with_windows(tmp_path):
+    runner = load_runner()
+    json_out = tmp_path / "sample.json"
+    json_out.write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {
+                        "blocks": [
+                            {
+                                "type": "text",
+                                "text": "Alpha marker appears before the body but the target phrase is absent.",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    tests = [
+        {"type": "present", "text": "missing target phrase"},
+        {"type": "order", "before": "body", "after": "Alpha marker"},
+        {"type": "math", "math": r"\lambda_i \in \mathbb{F}_q"},
+    ]
+
+    report = runner.olmocr_unit_check_report(
+        tests,
+        json_out,
+        source_pdf="bench_data/pdfs/arxiv_math/sample.pdf",
+        split="arxiv_math",
+    )
+
+    assert report.pass_rate == 0.0
+    assert report.scored == 3
+    assert [failure["check_type"] for failure in report.failures] == [
+        "present",
+        "order",
+        "math",
+    ]
+    assert report.failures[0]["source_pdf"] == "bench_data/pdfs/arxiv_math/sample.pdf"
+    assert report.failures[0]["split"] == "arxiv_math"
+    assert report.failures[0]["expected"] == "missing target phrase"
+    assert "Alpha marker appears" in report.failures[0]["dongler_window"]
+    assert report.failures[1]["expected"] == "body before Alpha marker"
+    assert report.failures[1]["likely_failure_category"] == "reading order"
+    assert report.failures[2]["likely_failure_category"] == "math preservation"
+
+
+def test_olmocr_failure_report_keeps_image_placeholders_as_ocr_missing(tmp_path):
+    runner = load_runner()
+    json_out = tmp_path / "image-only.json"
+    json_out.write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {
+                        "blocks": [
+                            {
+                                "type": "figure",
+                                "alt_text": "Image image-1-Im1",
+                                "image_ref": "image-1-Im1",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+
+    report = runner.olmocr_unit_check_report(
+        [{"type": "present", "text": "missing scanned text"}],
+        json_out,
+    )
+
+    assert report.failures[0]["likely_failure_category"] == "scanned/OCR missing"
+
+
+def test_olmocr_unit_check_report_records_best_reference_window(tmp_path):
+    runner = load_runner()
+    json_out = tmp_path / "sample.json"
+    json_out.write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {
+                        "blocks": [
+                            {
+                                "type": "text",
+                                "text": "Dongler text does not contain the checked marker.",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    tests = [{"type": "present", "text": "reference target phrase"}]
+
+    report = runner.olmocr_unit_check_report(
+        tests,
+        json_out,
+        reference_outputs={
+            "pypdf": "An unrelated extraction window.",
+            "pdfminer": "Before the reference target phrase and after it.",
+        },
+    )
+
+    assert report.failures[0]["reference_extractor"] == "pdfminer"
+    assert "reference target phrase" in report.failures[0]["reference_window"]
+
+
+def test_olmocr_reference_window_matches_unicode_math_aliases(tmp_path):
+    runner = load_runner()
+    json_out = tmp_path / "sample.json"
+    json_out.write_text(json.dumps({"pages": [{"blocks": [{"type": "text", "text": ""}]}]}))
+
+    report = runner.olmocr_unit_check_report(
+        [{"type": "math", "math": r"\theta_1 + ... + \theta_n"}],
+        json_out,
+        reference_outputs={
+            "pypdf": (
+                "preface " * 80
+                + "The nearby formula is θ_1 + ... + θ_n in the source."
+            )
+        },
+    )
+
+    assert report.failures[0]["reference_extractor"] == "pypdf"
+    assert "θ_1 + ... + θ_n" in report.failures[0]["reference_window"]
+
+
+def test_olmocr_reference_window_is_empty_when_no_reference_matches(tmp_path):
+    runner = load_runner()
+    json_out = tmp_path / "sample.json"
+    json_out.write_text(json.dumps({"pages": [{"blocks": [{"type": "text", "text": ""}]}]}))
+
+    report = runner.olmocr_unit_check_report(
+        [{"type": "present", "text": "missing target marker"}],
+        json_out,
+        reference_outputs={
+            "pypdf": "An unrelated page opening with no useful overlap.",
+            "pdfminer": "Another extraction that still does not contain the target.",
+        },
+    )
+
+    assert report.failures[0]["reference_extractor"] is None
+    assert report.failures[0]["reference_window"] is None
+
+
+def test_benchmark_dataset_includes_olmocr_failure_reports(tmp_path, monkeypatch):
+    runner = load_runner()
+    data_root = tmp_path / "data"
+    local_dir = data_root / "olmocr-bench"
+    pdf_dir = local_dir / "bench_data" / "pdfs" / "multi_column"
+    pdf_dir.mkdir(parents=True)
+    pdf = pdf_dir / "sample.pdf"
+    pdf.write_bytes(b"%PDF")
+    (local_dir / "bench_data" / "multi_column.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "pdf": "multi_column/sample.pdf",
+                        "type": "present",
+                        "text": "visible phrase",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "pdf": "multi_column/sample.pdf",
+                        "type": "order",
+                        "before": "left column",
+                        "after": "right column",
+                    }
+                ),
+            ]
+        )
+    )
+
+    def fake_run_document(_cli, _path, json_out):
+        json_out.write_text(
+            json.dumps(
+                {
+                    "pages": [
+                        {
+                            "blocks": [
+                                {
+                                    "type": "text",
+                                    "text": "visible phrase right column then left column",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            )
+        )
+        return True, 0.25, None
+
+    monkeypatch.setattr(runner, "run_document", fake_run_document)
+
+    result = runner.benchmark_dataset(
+        {
+            "name": "olmOCR-Bench",
+            "slug": "olmocr-bench",
+            "task": "unit-style OCR/PDF parsing tests",
+            "local_dir": "olmocr-bench",
+        },
+        data_root,
+        tmp_path / "out",
+        tmp_path / "dongler",
+        max_pdfs=10,
+    )
+
+    assert result["ground_truth_accuracy"] == 0.5
+    assert result["olmocr_failure_count"] == 1
+    assert result["olmocr_failures"][0]["check_type"] == "order"
+    assert result["olmocr_failures"][0]["split"] == "multi_column"
+    assert "right column then left column" in result["olmocr_failures"][0]["dongler_window"]
+
+
+def test_benchmark_dataset_adds_reference_windows_when_enabled(tmp_path, monkeypatch):
+    runner = load_runner()
+    data_root = tmp_path / "data"
+    local_dir = data_root / "olmocr-bench"
+    pdf_dir = local_dir / "bench_data" / "pdfs" / "present"
+    pdf_dir.mkdir(parents=True)
+    pdf = pdf_dir / "sample.pdf"
+    pdf.write_bytes(b"%PDF")
+    (local_dir / "bench_data" / "present.jsonl").write_text(
+        json.dumps(
+            {
+                "pdf": "present/sample.pdf",
+                "type": "present",
+                "text": "reference only marker",
+            }
+        )
+        + "\n"
+    )
+
+    def fake_run_document(_cli, _path, json_out):
+        json_out.write_text(
+            json.dumps(
+                {
+                    "pages": [
+                        {
+                            "blocks": [
+                                {"type": "text", "text": "Dongler missed the marker."}
+                            ]
+                        }
+                    ]
+                }
+            )
+        )
+        return True, 0.25, None
+
+    def fake_reference_outputs(path, extractors):
+        assert path == pdf
+        assert extractors == ["pdfminer"]
+        return {"pdfminer": "A reference only marker appears here."}
+
+    monkeypatch.setattr(runner, "run_document", fake_run_document)
+    monkeypatch.setattr(
+        runner,
+        "reference_extractor_outputs_for_pdf",
+        fake_reference_outputs,
+    )
+
+    result = runner.benchmark_dataset(
+        {
+            "name": "olmOCR-Bench",
+            "slug": "olmocr-bench",
+            "task": "unit-style OCR/PDF parsing tests",
+            "local_dir": "olmocr-bench",
+        },
+        data_root,
+        tmp_path / "out",
+        tmp_path / "dongler",
+        max_pdfs=10,
+        reference_extractors=["pdfminer"],
+    )
+
+    assert result["olmocr_failures"][0]["reference_extractor"] == "pdfminer"
+    assert "reference only marker" in result["olmocr_failures"][0]["reference_window"]
+
+
+def test_benchmark_dataset_can_enable_ocr_fallback_for_child_extractions(
+    tmp_path, monkeypatch
+):
+    runner = load_runner()
+    data_root = tmp_path / "data"
+    local_dir = data_root / "olmocr-bench"
+    pdf_dir = local_dir / "bench_data" / "pdfs" / "old_scans"
+    pdf_dir.mkdir(parents=True)
+    pdf = pdf_dir / "sample.pdf"
+    pdf.write_bytes(b"%PDF")
+    (local_dir / "bench_data" / "old_scans.jsonl").write_text(
+        json.dumps(
+            {
+                "pdf": "old_scans/sample.pdf",
+                "type": "present",
+                "text": "recognized OCR text",
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.delenv("DONGLER_OCR_FALLBACK", raising=False)
+
+    def fake_run_document(_cli, _path, json_out):
+        assert runner.os.environ["DONGLER_OCR_FALLBACK"] == "1"
+        json_out.write_text(
+            json.dumps(
+                {
+                    "pages": [
+                        {
+                            "blocks": [
+                                {"type": "text", "text": "recognized OCR text"}
+                            ]
+                        }
+                    ]
+                }
+            )
+        )
+        return True, 0.25, None
+
+    monkeypatch.setattr(runner, "run_document", fake_run_document)
+
+    result = runner.benchmark_dataset(
+        {
+            "name": "olmOCR-Bench",
+            "slug": "olmocr-bench",
+            "task": "unit-style OCR/PDF parsing tests",
+            "local_dir": "olmocr-bench",
+        },
+        data_root,
+        tmp_path / "out",
+        tmp_path / "dongler",
+        max_pdfs=10,
+        ocr_fallback=True,
+    )
+
+    assert result["ground_truth_accuracy"] == 1.0
+    assert "DONGLER_OCR_FALLBACK" not in runner.os.environ
 
 
 def test_benchmark_dataset_scores_olmocr_jsonl_unit_checks(tmp_path, monkeypatch):
@@ -917,6 +1275,73 @@ def test_benchmark_dataset_can_emit_visual_comparison_artifacts(tmp_path, monkey
     assert len(result["visual_comparisons"]) == 1
     assert result["visual_comparisons"][0]["document"].endswith("sample.pdf")
     assert result["visual_comparisons"][0]["artifacts"]["markdown_png"].endswith("markdown.png")
+
+
+def test_prepare_visual_output_dir_removes_stale_artifacts_when_enabled(tmp_path):
+    runner = load_runner()
+    visual_dir = tmp_path / "visuals"
+    stale = visual_dir / "old-dataset" / "extracted.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("")
+
+    runner.prepare_visual_output_dir(visual_dir, enabled=True)
+
+    assert visual_dir.exists()
+    assert not stale.exists()
+
+
+def test_visual_comparison_writes_structured_latex_error_artifact(tmp_path, monkeypatch):
+    renderer = load_visual_renderer()
+    document = tmp_path / "sample.pdf"
+    document.write_bytes(b"%PDF")
+
+    def fake_run_extract(_cli, _document, output_format):
+        return "broken $ markdown" if output_format == "markdown" else "safe latex"
+
+    def fake_render_pdf_first_page(_pdf, output_prefix):
+        png = output_prefix.with_suffix(".png")
+        png.write_bytes(b"png")
+        return png
+
+    def fake_compile_latex(tex_path, output_dir):
+        if tex_path.name == "extracted-markdown-render.tex":
+            raise subprocess.CalledProcessError(
+                1,
+                ["pdflatex", str(tex_path)],
+                output="compile stdout",
+                stderr="compile stderr",
+            )
+        pdf = output_dir / f"{tex_path.stem}.pdf"
+        pdf.write_bytes(b"%PDF")
+        return pdf
+
+    monkeypatch.setattr(renderer, "run_extract", fake_run_extract)
+    monkeypatch.setattr(renderer, "render_pdf_first_page", fake_render_pdf_first_page)
+    monkeypatch.setattr(renderer, "compile_latex", fake_compile_latex)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render-extraction-comparison.py",
+            str(document),
+            "--cli",
+            str(tmp_path / "dongler"),
+            "--out-dir",
+            str(tmp_path / "visuals"),
+        ],
+    )
+
+    assert renderer.main() == 0
+
+    manifest = json.loads(
+        (tmp_path / "visuals" / "sample" / "comparison.json").read_text()
+    )
+    assert manifest["source"] == str(document)
+    assert "markdown_render_error" in manifest
+    error = json.loads(Path(manifest["markdown_render_error"]).read_text())
+    assert error["stage"] == "markdown_latex_compile"
+    assert "compile stderr" in error["stderr"]
+    assert manifest["latex_png"].endswith("latex.png")
 
 
 def test_benchmark_dataset_scores_structured_json_geometry_when_available(

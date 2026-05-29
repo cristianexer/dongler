@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dongler"
-version = "0.3.0"
+version = "0.3.1"
 description = "Created by Daniel Fat. Python bindings for a Rust-native document extraction engine focused on Markdown and LaTeX output."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -41,6 +41,10 @@ include = [
 [dependency-groups]
 dev = [
     "maturin>=1.8,<1.9",
+    "pdfminer-six>=20251107",
+    "pdfplumber>=0.11.8",
+    "pymupdf>=1.26.5",
+    "pypdf>=6.12.2",
     "pytest>=8.0",
 ]
 

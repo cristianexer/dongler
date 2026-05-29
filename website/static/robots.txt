@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://cristianexer.github.io/dongler/sitemap.xml

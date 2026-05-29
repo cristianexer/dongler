@@ -1,16 +1,14 @@
 # dongler
 
-TypeScript bindings for Dongler, a Rust-native document extraction engine.
+TypeScript bindings for Dongler, a fast Rust-native document extraction engine.
 
 Dongler is designed around a simple workflow: load a document path, receive a
 document object, then render Markdown, LaTeX, or JSON from that object.
 
-Created by Daniel Fat.
-
 ## Status
 
 The npm package calls the Rust core through a NAPI native addon. It supports the
-same `.txt` and native PDF extraction paths as the Rust and Python packages.
+same native PDF and text extraction paths as the Rust and Python packages.
 
 ## Install
 
@@ -20,14 +18,15 @@ npm install @cristianexer/dongler
 
 ## PDF Workflow
 
-The object API works for PDFs:
+Parse a PDF into Markdown, LaTeX, or JSON:
 
 ```ts
 import { load } from "@cristianexer/dongler";
 
-const doc = load("invoice.pdf");
+const doc = load("report.pdf");
 const markdown = doc.toMarkdown();
 const latex = doc.toLatex();
+const data = doc.toObject();
 ```
 
 PDF documents include page geometry, block source anchors, warnings, and image
@@ -73,3 +72,8 @@ const doc = parseText("Hello from Dongler");
 const markdown = toMarkdown("Hello from Dongler");
 const latex = toLatex("Revenue is 100%");
 ```
+
+## License
+
+Dongler is MIT licensed. Copyright (c) 2026 Daniel Fat. See `LICENSE` and
+`NOTICE` for the full notice text.

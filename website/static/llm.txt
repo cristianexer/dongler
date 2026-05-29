@@ -1,0 +1,53 @@
+# Dongler
+
+Dongler is a fast Rust-native document extraction package for developers. It
+parses PDFs and other document formats into Markdown, LaTeX, and structured JSON
+through a CLI, Python package, TypeScript package, and Rust API.
+
+Primary docs:
+
+- Website: https://cristianexer.github.io/dongler/
+- Quick start: https://cristianexer.github.io/dongler/docs/quickstart
+- Developer guide: https://cristianexer.github.io/dongler/docs/developer-guide
+- API reference: https://cristianexer.github.io/dongler/docs/api
+- Repository: https://github.com/cristianexer/dongler
+
+Install:
+
+```bash
+pip install dongler
+npm install @cristianexer/dongler
+cargo install dongler
+```
+
+Python example:
+
+```python
+import dongler
+
+doc = dongler.load("report.pdf")
+markdown = doc.to_markdown()
+data = doc.to_dict()
+```
+
+TypeScript example:
+
+```ts
+import { load } from "@cristianexer/dongler";
+
+const doc = load("report.pdf");
+const markdown = doc.toMarkdown();
+const data = doc.toObject();
+```
+
+Rust example:
+
+```rust
+let doc = dongler_core::load_path("report.pdf")?;
+let markdown = doc.to_markdown()?;
+```
+
+Use Markdown for readable document text, LaTeX for document-like technical
+rendering, and JSON when page/block/table/image metadata is needed. The default
+PDF path is local and native; scanned or image-only PDFs may need OCR outside
+Dongler today.

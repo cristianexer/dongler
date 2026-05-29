@@ -62,6 +62,22 @@
   margin-top: 2rem;
 }
 
+.commandRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1.35rem;
+}
+
+.commandRow code {
+  background: #eef7f8;
+  border: 1px solid var(--dongler-border);
+  border-radius: 8px;
+  color: var(--dongler-ink);
+  font-size: 0.82rem;
+  padding: 0.48rem 0.62rem;
+}
+
 .previewPanel {
   background: var(--dongler-panel);
   border: 1px solid rgba(11, 21, 36, 0.9);
@@ -203,6 +219,7 @@
 .featureGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  row-gap: 2rem;
 }
 
 .featureItem {
@@ -211,22 +228,21 @@
 }
 
 .featureIcon {
+  align-items: center;
+  background: #ecfaf9;
   border: 2px solid var(--ifm-color-primary);
-  display: block;
+  border-radius: 8px;
+  color: var(--ifm-color-primary);
+  display: inline-flex;
   height: 1.7rem;
+  justify-content: center;
   margin-bottom: 1.3rem;
-  position: relative;
   width: 1.7rem;
 }
 
-.featureIcon::after {
-  background: var(--dongler-contrast);
-  bottom: 0.22rem;
-  content: "";
-  height: 0.32rem;
-  position: absolute;
-  right: -0.34rem;
-  width: 0.7rem;
+.featureIcon svg {
+  height: 0.85rem;
+  width: 0.85rem;
 }
 
 .featureItem h3 {

@@ -1,75 +1,154 @@
 import Heading from "@theme/Heading";
+import Head from "@docusaurus/Head";
 import Link from "@docusaurus/Link";
 import Layout from "@theme/Layout";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  faBolt,
+  faCode,
+  faFilePdf,
+  faLayerGroup,
+  faTableCells,
+  faTerminal,
+} from "@fortawesome/free-solid-svg-icons";
 
 import styles from "./index.module.css";
 
+const siteUrl = "https://cristianexer.github.io/dongler";
+const seoDescription =
+  "Dongler is a fast Rust-native PDF and document extraction package for developers. Parse PDFs and documents into Markdown, LaTeX, and JSON from Python, TypeScript, Rust, or the CLI.";
+const seoKeywords = [
+  "PDF parser",
+  "PDF to Markdown",
+  "document extraction",
+  "Markdown extraction",
+  "LaTeX extraction",
+  "Rust PDF parser",
+  "Python PDF parser",
+  "Node.js PDF parser",
+];
+
+const softwareSchema = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Dongler",
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "macOS, Linux, Windows",
+  description: seoDescription,
+  url: siteUrl,
+  codeRepository: "https://github.com/cristianexer/dongler",
+  license: "https://github.com/cristianexer/dongler/blob/main/LICENSE",
+  author: {
+    "@type": "Person",
+    name: "Daniel Fat",
+  },
+  programmingLanguage: ["Rust", "Python", "TypeScript"],
+  offers: {
+    "@type": "Offer",
+    price: "0",
+    priceCurrency: "USD",
+  },
+};
+
 const features = [
   {
-    title: "Predictable document objects",
-    body: "Consistent JSON for text, tables, metadata, and layout-aware structure as format support expands.",
+    icon: faFilePdf,
+    title: "PDF to Markdown in one call",
+    body: "Load a PDF path and render Markdown, LaTeX, or JSON from the same document object.",
   },
   {
-    title: "Batch at scale",
-    body: "Process directories of documents with per-file success and error results for reliable pipelines.",
+    icon: faBolt,
+    title: "Native speed, local runtime",
+    body: "A Rust core does the extraction locally, with no hosted service or model dependency in the default path.",
   },
   {
-    title: "Native. Bindings. Simple.",
-    body: "A Rust core powers the CLI plus Python and TypeScript packages through the same extraction model.",
+    icon: faLayerGroup,
+    title: "Same API across stacks",
+    body: "Use the CLI, Python, TypeScript, or Rust API without changing the extraction model.",
+  },
+  {
+    icon: faTableCells,
+    title: "Tables and structure",
+    body: "Extract page blocks, simple tables, metadata, source anchors, images, and warnings for downstream code.",
+  },
+  {
+    icon: faTerminal,
+    title: "Pipeline-friendly errors",
+    body: "Batch APIs return one result per file, so unsupported documents do not stop the whole job.",
+  },
+  {
+    icon: faCode,
+    title: "Developer-first output",
+    body: "Markdown for RAG and review, LaTeX for technical documents, JSON when you need the full IR.",
   },
 ];
 
 const docsPreview = [
   {
-    title: "Introduction",
-    to: "/docs/intro",
-    body: "What Dongler is, what works today, and what is planned.",
-  },
-  {
     title: "Quick start",
     to: "/docs/quickstart",
-    body: "Install packages, load documents, render Markdown, LaTeX, and JSON.",
+    body: "Install Dongler and parse your first PDF in Python, TypeScript, Rust, or the CLI.",
+  },
+  {
+    title: "Developer guide",
+    to: "/docs/developer-guide",
+    body: "Choose the right runtime, handle errors, batch files, and inspect the document object.",
   },
   {
     title: "API",
     to: "/docs/api",
-    body: "Use the object model from Rust, Python, and TypeScript.",
+    body: "Reference the object API, batch results, renderers, and document IR fields.",
   },
 ];
 
 export default function Home() {
   return (
     <Layout
-      title="Document extraction for clean Markdown and LaTeX"
-      description="Dongler is a Rust-native document extraction engine with Python and TypeScript bindings."
+      title="Fast PDF parsing to Markdown, LaTeX, and JSON"
+      description={seoDescription}
     >
+      <Head>
+        <link rel="canonical" href={`${siteUrl}/`} />
+        <meta name="keywords" content={seoKeywords.join(", ")} />
+        <meta property="og:title" content="Dongler: fast PDF parsing to Markdown, LaTeX, and JSON" />
+        <meta property="og:description" content={seoDescription} />
+        <meta property="og:url" content={`${siteUrl}/`} />
+        <meta property="og:type" content="website" />
+        <meta property="og:image" content={`${siteUrl}/img/dongler-social-card.svg`} />
+        <meta name="twitter:card" content="summary_large_image" />
+        <script type="application/ld+json">{JSON.stringify(softwareSchema)}</script>
+      </Head>
       <main>
         <section className={styles.hero}>
           <div className={styles.heroInner}>
             <div className={styles.heroCopy}>
               <p className={styles.brandWord}>Dongler</p>
               <Heading as="h1" className={styles.heroTitle}>
-                Extract documents into clean <span>Markdown and LaTeX</span>.
+                Fast PDF parsing to clean <span>Markdown</span>.
               </Heading>
               <p className={styles.heroText}>
-                A Rust-native extraction engine that turns complex documents into
-                predictable, structured document objects. Built for batch
-                workloads. Designed for clean output. Bindings for Python and
-                TypeScript.
+                Parse PDFs and other documents into Markdown, LaTeX, or JSON
+                with a local Rust engine and simple bindings for Python,
+                TypeScript, Rust, and the CLI.
               </p>
               <div className={styles.actions}>
-                <Link className="button button--primary button--lg" to="/docs/intro">
-                  Read the docs <span aria-hidden="true">-&gt;</span>
-                </Link>
                 <Link className="button button--secondary button--lg" to="/docs/quickstart">
                   Quick start <span aria-hidden="true">-&gt;</span>
                 </Link>
+                <Link className="button button--primary button--lg" to="/docs/developer-guide">
+                  Developer guide <span aria-hidden="true">-&gt;</span>
+                </Link>
+              </div>
+              <div className={styles.commandRow} aria-label="Install commands">
+                <code>pip install dongler</code>
+                <code>npm install @cristianexer/dongler</code>
+                <code>cargo install dongler</code>
               </div>
             </div>
 
             <div className={styles.previewPanel} aria-label="Markdown output preview">
               <div className={styles.panelBar}>
-                <span>Input</span>
+                <span>report.pdf</span>
                 <span aria-hidden="true">-&gt;</span>
                 <span>Document object</span>
                 <span aria-hidden="true">-&gt;</span>
@@ -81,51 +160,43 @@ export default function Home() {
               </div>
               <div className={styles.panelBody}>
                 <pre className={styles.markdownSample}>
-{`# Quarterly Report
-## Executive Summary
+{`import dongler
 
-Dongler extracts tables, lists, and
-structure with high fidelity.
+doc = dongler.load("report.pdf")
+markdown = doc.to_markdown()
+data = doc.to_dict()
 
-### Key Results
-- Revenue increased 18% YoY
-- Operating margin improved to 24%
-- Cash position remains strong
+# Extracted Markdown
 
-### Financials
-| Metric | Q1 FY24 | Q2 FY24 | Q3 FY24 |
-| --- | --- | --- | --- |
-| Revenue | 12.4M | 14.7M | 16.6M |`}
+## Capital adequacy by class
+
+| Class | Requirement | Available |
+| --- | --- | --- |
+| A | 12.4M | 16.6M |`}
                 </pre>
                 <div className={styles.documentPreview}>
-                  <h2>Quarterly Report</h2>
-                  <h3>Executive Summary</h3>
+                  <h2>Extracted Markdown</h2>
+                  <h3>Capital adequacy by class</h3>
                   <p>
-                    Dongler extracts tables, lists, and structure with high
-                    fidelity.
+                    Parsed from a PDF into a structured document object and
+                    rendered as Markdown.
                   </p>
-                  <h3>Key Results</h3>
-                  <ul>
-                    <li>Revenue increased 18% YoY</li>
-                    <li>Operating margin improved to 24%</li>
-                    <li>Cash position remains strong</li>
-                  </ul>
                   <table>
                     <thead>
                       <tr>
-                        <th>Metric</th>
-                        <th>Q1 FY24</th>
-                        <th>Q3 FY24</th>
+                        <th>Class</th>
+                        <th>Requirement</th>
+                        <th>Available</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr>
-                        <td>Revenue</td>
+                        <td>A</td>
                         <td>12.4M</td>
                         <td>16.6M</td>
                       </tr>
                       <tr>
-                        <td>Margin</td>
+                        <td>B</td>
                         <td>18%</td>
                         <td>24%</td>
                       </tr>
@@ -140,17 +211,19 @@ structure with high fidelity.
         <section className={styles.featureBand} aria-labelledby="workloads">
           <div className={styles.featureIntro}>
             <Heading as="h2" id="workloads">
-              Built for real-world document workloads.
+              Built for document pipelines that need useful output quickly.
             </Heading>
             <p>
-              Dongler focuses on predictable structure and clean output so your
-              pipelines stay reliable and downstream work stays simple.
+              Start with the common case: a developer has a PDF path and needs
+              Markdown, LaTeX, or JSON without wiring together a stack of tools.
             </p>
           </div>
           <div className={styles.featureGrid}>
             {features.map((item) => (
               <article className={styles.featureItem} key={item.title}>
-                <span className={styles.featureIcon} aria-hidden="true" />
+                <span className={styles.featureIcon} aria-hidden="true">
+                  <FontAwesomeIcon icon={item.icon} />
+                </span>
                 <h3>{item.title}</h3>
                 <p>{item.body}</p>
               </article>
@@ -161,18 +234,18 @@ structure with high fidelity.
         <section className={styles.docsBand} aria-labelledby="docs-preview">
           <div className={styles.docsContent}>
             <Heading as="h2" id="docs-preview">
-              Start with the path-first workflow.
+              Developer docs for the path-first workflow.
             </Heading>
             <p>
-              Load a document path once, inspect structured metadata, then render
-              Markdown, LaTeX, or JSON from the same object.
+              Load a document path once, inspect structured metadata, handle
+              warnings and batch errors, then render Markdown, LaTeX, or JSON.
             </p>
             <pre className={styles.installBlock}>
 {`import dongler
 
-doc = dongler.load("document.txt")
+doc = dongler.load("document.pdf")
 markdown = doc.to_markdown()
-latex = doc.to_latex()`}
+json_payload = doc.to_json()`}
             </pre>
           </div>
 

@@ -4,13 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "dongler"
-version = "0.3.1"
-description = "Created by Daniel Fat. Python bindings for a Rust-native document extraction engine focused on Markdown and LaTeX output."
+version = "0.3.2"
+description = "Fast Rust-native PDF and document extraction for Python, with Markdown, LaTeX, and JSON output."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "Daniel Fat" }]
-keywords = ["documents", "extraction", "pdf", "markdown", "latex", "rust"]
+keywords = ["documents", "extraction", "pdf", "pdf-parser", "markdown", "latex", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -18,11 +18,13 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
     "Topic :: Text Processing",
+    "Topic :: Text Processing :: Markup",
 ]
 
 [project.urls]
-Homepage = "https://github.com/cristianexer/dongler"
+Homepage = "https://cristianexer.github.io/dongler/"
 Repository = "https://github.com/cristianexer/dongler"
+Documentation = "https://cristianexer.github.io/dongler/docs/intro"
 
 [tool.maturin]
 bindings = "pyo3"

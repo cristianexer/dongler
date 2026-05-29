@@ -1,10 +1,10 @@
 [package]
 name = "dongler-python"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 license = "MIT"
 authors = ["Daniel Fat"]
-description = "Created by Daniel Fat. Python bindings for the Dongler Rust document extraction core."
+description = "Python bindings for fast Rust-native PDF and document extraction."
 repository = "https://github.com/cristianexer/dongler"
 publish = false
 
@@ -13,6 +13,6 @@ name = "_dongler"
 crate-type = ["cdylib"]
 
 [dependencies]
-dongler-core = { path = "../dongler-core", version = "0.3.1" }
+dongler-core = { path = "../dongler-core", version = "0.3.2" }
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
 serde_json = "1.0"

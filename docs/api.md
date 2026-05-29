@@ -12,19 +12,25 @@ text helper functions for compatibility.
 Python:
 
 ```python
+import dongler
+
 doc = dongler.load("notes.txt")
 doc.to_markdown()
 doc.to_latex()
 doc.to_json()
+doc.to_dict()
 ```
 
 TypeScript:
 
 ```ts
+import { load } from "@cristianexer/dongler";
+
 const doc = load("notes.txt");
 doc.toMarkdown();
 doc.toLatex();
 doc.toJson();
+doc.toObject();
 ```
 
 Rust:
@@ -65,6 +71,15 @@ Each result has:
 - `ok`
 - `document`
 - `error`
+
+## Choosing an Output
+
+- Use Markdown when indexing, displaying, reviewing, or passing document text to
+  downstream text systems.
+- Use LaTeX when preserving technical text, formulas, or document-oriented
+  rendering is more important.
+- Use JSON when you need page numbers, block types, bounding boxes, warnings,
+  image references, or table cells.
 
 ## Compatibility Helpers
 

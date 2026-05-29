@@ -4,8 +4,9 @@ sidebar_position: 1
 
 # Introduction
 
-Dongler is a Rust-native document extraction engine with Python and TypeScript
-bindings. The public workflow is path-first:
+Dongler is a fast Rust-native document extraction package for developers who
+need to parse PDFs and other files into Markdown, LaTeX, or structured JSON.
+The public workflow is path-first:
 
 ```python
 import dongler
@@ -15,10 +16,14 @@ markdown = doc.to_markdown()
 latex = doc.to_latex()
 ```
 
-PDF extraction is the product focus. Dongler `0.3.0` ships a native Rust PDF
+PDF extraction is the product focus. Dongler `0.3.2` ships a native Rust PDF
 path alongside `.txt`/Markdown/TeX, DOCX, XLSX, PPTX, ODT/ODS/ODP, HTML/XML,
 EML, JSON/JSONL, CSV/TSV, gzip-compressed text corpus files, bare gzip source
-files, and image metadata extraction, object APIs, batch APIs, and renderers.
+files, image metadata extraction, object APIs, batch APIs, and renderers.
+
+The default path is local and deterministic. There is no hosted service, API
+key, OCR dependency, or LLM dependency required for the common PDF-to-Markdown
+workflow.
 
 ## What Works Today
 
@@ -47,3 +52,16 @@ files, and image metadata extraction, object APIs, batch APIs, and renderers.
 - Clean Markdown and LaTeX output.
 - A Rust core with consistent Python and TypeScript bindings.
 - Honest warnings when a PDF structure is detected but only partially modeled.
+
+## When to Use Dongler
+
+Use Dongler when you want a package you can install into a developer workflow:
+
+- Convert user-supplied PDFs to Markdown before indexing or review.
+- Extract tables and page-aware structure for downstream processing.
+- Batch through mixed folders without one bad file stopping the run.
+- Keep extraction local instead of sending documents to a service.
+
+Dongler is still evolving. Scanned PDFs and image-only pages need an OCR layer
+outside the default native path today, and complex layout recovery is being
+improved incrementally.

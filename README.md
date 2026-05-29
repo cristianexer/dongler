@@ -1,13 +1,16 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Dongler logo" width="132">
+  <img src="https://cristianexer.github.io/dongler/img/dongler-logo.png" alt="Dongler logo" width="132">
 </p>
 
 # Dongler
 
-Dongler is a Rust-native document extraction engine with Python and TypeScript
-bindings. It is built for the workflow developers actually need: load a
-document path, extract structure once, then render clean Markdown or LaTeX from
-the same document object.
+Dongler is a fast, Rust-native document extraction package for developers who
+need to parse PDFs and other documents into Markdown, LaTeX, or structured
+JSON.
+
+It is designed around the practical path-first workflow: load a file, inspect
+the document object, then render the output format your pipeline needs. The same
+core engine powers the CLI, Python package, TypeScript package, and Rust API.
 
 ## Install
 
@@ -20,25 +23,17 @@ npm install @cristianexer/dongler
 For Rust library usage, depend on `dongler-core`. The public `dongler` crate is
 the CLI package.
 
-## How to Use
-
-Dongler supports native extraction for PDFs, DOCX, XLSX, PPTX, ODT/ODS/ODP,
-HTML/XML, EML, JSON/JSONL, CSV/TSV, image metadata including TIFF, and plain
-text/Markdown/TeX today, including gzip-compressed text/JSON/XML/CSV corpus
-files, bare gzip source files, and zip/tar/tar.gz source packages. Legacy
-binary Office and Outlook containers are detected and return explicit
-planned-format errors until their engines land. The same API works across
-supported formats, so you can use the same code to extract Markdown from a PDF
-invoice, spreadsheet, web page, email, dataset annotation, or plain text note.
+## Parse a PDF
 
 Python:
 
 ```python
 import dongler
 
-doc = dongler.load("invoice.pdf")
+doc = dongler.load("report.pdf")
 markdown = doc.to_markdown()
 latex = doc.to_latex()
+data = doc.to_dict()
 ```
 
 TypeScript:
@@ -46,9 +41,10 @@ TypeScript:
 ```ts
 import { load } from "@cristianexer/dongler";
 
-const doc = load("invoice.pdf");
+const doc = load("report.pdf");
 const markdown = doc.toMarkdown();
 const latex = doc.toLatex();
+const data = doc.toObject();
 ```
 
 Rust:
@@ -57,10 +53,41 @@ Rust:
 use dongler_core::load_path;
 
 fn main() -> dongler_core::Result<()> {
-    let doc = load_path("invoice.pdf")?;
+    let doc = load_path("report.pdf")?;
     println!("{}", doc.to_markdown()?);
     Ok(())
 }
+```
+
+## What You Get
+
+- Markdown, LaTeX, and JSON renderers from the same document object.
+- Page, block, table, image, warning, and metadata fields for downstream code.
+- Rust-native PDF extraction with no hosted service dependency.
+- Python and TypeScript bindings over the same Rust core.
+- Batch APIs that return one result per file, so one unsupported document does
+  not stop a job.
+
+## Supported Inputs
+
+Dongler supports native extraction for PDFs, DOCX, XLSX, PPTX, ODT/ODS/ODP,
+HTML/XML, EML, JSON/JSONL, CSV/TSV, image metadata including TIFF, and plain
+text/Markdown/TeX today. It also supports gzip-compressed text/JSON/XML/CSV
+corpus files, bare gzip source files, and zip/tar/tar.gz source packages.
+
+Legacy binary Office and Outlook containers are detected and return explicit
+planned-format errors until their engines land.
+
+## More Examples
+
+Plain text, Markdown, office files, and data files use the same API:
+
+```python
+import dongler
+
+doc = dongler.load("invoice.docx")
+markdown = doc.to_markdown()
+latex = doc.to_latex()
 ```
 
 ## Batch Processing
@@ -128,6 +155,13 @@ dongler extract notes.txt --format json
 PDF extraction through the CLI uses the same Rust-native engine as the Rust,
 Python, and TypeScript packages.
 
+## Developer Docs
+
+- [Documentation](https://cristianexer.github.io/dongler/docs/intro)
+- [Quick start](https://cristianexer.github.io/dongler/docs/quickstart)
+- [Developer guide](https://cristianexer.github.io/dongler/docs/developer-guide)
+- [API reference](https://cristianexer.github.io/dongler/docs/api)
+
 ## Benchmarks
 
 <!-- BENCHMARKS:START -->
@@ -157,4 +191,5 @@ Coverage is `parse / bbox / anchors`. Ground-truth accuracy is token-F1, olmOCR 
 
 ## License
 
-Dongler is licensed under the MIT License. See `LICENSE` and `NOTICE`.
+Dongler is MIT licensed. Copyright (c) 2026 Daniel Fat. See `LICENSE` and
+`NOTICE` for the full notice text.

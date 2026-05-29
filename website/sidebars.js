@@ -3,6 +3,7 @@ const sidebars = {
   docs: [
     "intro",
     "quickstart",
+    "developer-guide",
     "pdf-workflow",
     "batch-processing",
     "api",

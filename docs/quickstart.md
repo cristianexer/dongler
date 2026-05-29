@@ -20,11 +20,19 @@ package.
 ```python
 import dongler
 
-doc = dongler.load("notes.txt")
+doc = dongler.load("report.pdf")
 
 print(doc.metadata["block_count"])
 print(doc.to_markdown())
 print(doc.to_latex())
+```
+
+`to_dict()` gives you the full document object for custom pipelines:
+
+```python
+data = doc.to_dict()
+for page in data["pages"]:
+    print(page["number"], len(page["blocks"]))
 ```
 
 ## TypeScript
@@ -32,7 +40,7 @@ print(doc.to_latex())
 ```ts
 import { load } from "@cristianexer/dongler";
 
-const doc = load("notes.txt");
+const doc = load("report.pdf");
 
 console.log(doc.metadata.block_count);
 console.log(doc.toMarkdown());
@@ -45,7 +53,7 @@ console.log(doc.toLatex());
 use dongler_core::load_path;
 
 fn main() -> dongler_core::Result<()> {
-    let doc = load_path("notes.txt")?;
+    let doc = load_path("report.pdf")?;
 
     println!("blocks: {}", doc.metadata.block_count);
     println!("{}", doc.to_markdown()?);
@@ -56,15 +64,16 @@ fn main() -> dongler_core::Result<()> {
 ## CLI
 
 ```bash
-dongler inspect notes.txt
-dongler extract notes.txt --format markdown
-dongler extract notes.txt --format latex
-dongler extract notes.txt --format json
+dongler inspect report.pdf
+dongler extract report.pdf --format markdown
+dongler extract report.pdf --format latex
+dongler extract report.pdf --format json
 ```
 
-PDF paths use the native extraction engine:
+The CLI uses the same native extraction engine as the language bindings.
 
-```bash
-dongler inspect invoice.pdf
-dongler extract invoice.pdf --format json
-```
+## Next Steps
+
+- Read the [developer guide](./developer-guide.md) for pipeline patterns.
+- Use the [API reference](./api.md) when you need document object fields.
+- Use the [PDF workflow](./pdf-workflow.md) for PDF-specific behavior and scope.

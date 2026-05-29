@@ -4,8 +4,8 @@ sidebar_position: 7
 
 # CLI
 
-The `dongler` command is the quickest way to inspect files and extract supported
-formats.
+The `dongler` command is the quickest way to inspect files and extract Markdown,
+LaTeX, or JSON from supported formats.
 
 ```bash
 dongler --version
@@ -42,4 +42,10 @@ dongler extract deck.pptx --format markdown
 dongler extract notes.odt --format markdown
 dongler extract annotations.json --format markdown
 dongler extract boxes.csv --format json
+```
+
+For shell pipelines, prefer JSON when you need metadata or warnings:
+
+```bash
+dongler extract report.pdf --format json
 ```

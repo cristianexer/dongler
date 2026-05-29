@@ -2,7 +2,7 @@
 sidebar_position: 6
 ---
 
-# Python and TypeScript
+# Python and TypeScript Bindings
 
 The Python and TypeScript packages are thin wrappers over the Rust core. They do
 not duplicate extraction logic.
@@ -53,3 +53,10 @@ const latex = doc.toLatex();
 
 PDF documents expose the same render methods plus rich page/block fields such as
 `bbox`, `source_anchors`, `images`, and `warnings`.
+
+## Package Names
+
+- Python: `dongler`
+- TypeScript/Node.js: `@cristianexer/dongler`
+- Rust library: `dongler-core`
+- Rust CLI: `dongler`

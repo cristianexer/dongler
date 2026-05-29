@@ -7,6 +7,9 @@ sidebar_position: 4
 Use batch processing when converting folders, queues, or mixed document sets.
 Dongler returns one result per path so one failed file does not stop the batch.
 
+This is the recommended pattern for ingestion jobs. Treat each result as a
+separate success or failure, log the error, and continue.
+
 ## Python
 
 ```python

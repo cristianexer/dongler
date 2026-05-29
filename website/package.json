@@ -1,8 +1,8 @@
 {
   "name": "dongler-docs",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "private": true,
-  "description": "Docusaurus documentation site for Dongler.",
+  "description": "Developer documentation for Dongler, a fast PDF and document extraction package.",
   "scripts": {
     "start": "docusaurus start",
     "build": "docusaurus build",
@@ -12,13 +12,14 @@
   "dependencies": {
     "@docusaurus/core": "3.10.1",
     "@docusaurus/preset-classic": "3.10.1",
+    "@fortawesome/free-solid-svg-icons": "^7.2.0",
+    "@fortawesome/react-fontawesome": "^3.3.1",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^2.1.1",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
-  "devDependencies": {},
   "overrides": {
     "serialize-javascript": "^7.0.5"
   }

@@ -4,7 +4,7 @@ const darkCodeTheme = require("prism-react-renderer").themes.dracula;
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: "Dongler",
-  tagline: "Clean structure from messy documents",
+  tagline: "Fast PDF parsing to Markdown, LaTeX, and JSON",
   favicon: "img/dongler-logo.png",
 
   url: "https://cristianexer.github.io",
@@ -12,6 +12,37 @@ const config = {
   organizationName: "cristianexer",
   projectName: "dongler",
   trailingSlash: false,
+  headTags: [
+    {
+      tagName: "meta",
+      attributes: {
+        name: "keywords",
+        content:
+          "PDF parser, PDF to Markdown, document extraction, Markdown extraction, LaTeX extraction, Rust PDF parser, Python PDF parser, Node.js PDF parser",
+      },
+    },
+    {
+      tagName: "meta",
+      attributes: {
+        name: "author",
+        content: "Daniel Fat",
+      },
+    },
+    {
+      tagName: "meta",
+      attributes: {
+        name: "google-site-verification",
+        content: "7jJ6oNFmSvCO10VgyTcEQ6I4bOztehoTI4d78mOy8-g",
+      },
+    },
+    {
+      tagName: "meta",
+      attributes: {
+        name: "msvalidate.01",
+        content: "75399C72B829EF6C68317EBB1E2D0380",
+      },
+    },
+  ],
 
   onBrokenLinks: "throw",
   markdown: {
@@ -81,7 +112,7 @@ const config = {
           items: [
             { label: "Rust", href: "https://crates.io/crates/dongler" },
             { label: "Python", href: "https://pypi.org/project/dongler/" },
-            { label: "npm", href: "https://www.npmjs.com/package/dongler" },
+            { label: "npm", href: "https://www.npmjs.com/package/@cristianexer/dongler" },
           ],
         },
         {
@@ -92,7 +123,7 @@ const config = {
           ],
         },
       ],
-      copyright: `Created by Daniel Fat. Copyright © ${new Date().getFullYear()} Dongler contributors.`,
+      copyright: `MIT licensed. Maintained by Daniel Fat and Dongler contributors. Copyright © ${new Date().getFullYear()}.`,
     },
     prism: {
       theme: lightCodeTheme,

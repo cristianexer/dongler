@@ -3,7 +3,7 @@ import json
 
 
 def test_import_exposes_version():
-    assert dongler.__version__ == "0.3.2"
+    assert dongler.__version__ == "0.3.3"
 
 
 def test_parse_text_returns_native_dict():

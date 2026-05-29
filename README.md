@@ -4,6 +4,12 @@
 
 # Dongler
 
+<p align="center">
+  <a href="https://pypi.org/project/dongler/"><img alt="PyPI package" src="https://img.shields.io/pypi/v/dongler?style=for-the-badge&logo=python&logoColor=white&label=PyPI&color=3776AB"></a>
+  <a href="https://crates.io/crates/dongler"><img alt="crates.io package" src="https://img.shields.io/crates/v/dongler?style=for-the-badge&logo=rust&logoColor=white&label=crates.io&color=8B4513"></a>
+  <a href="https://www.npmjs.com/package/@cristianexer/dongler"><img alt="npm package" src="https://img.shields.io/npm/v/@cristianexer/dongler?style=for-the-badge&logo=npm&logoColor=white&label=npm&color=CB3837"></a>
+</p>
+
 Dongler is a fast, Rust-native document extraction package for developers who
 need to parse PDFs and other documents into Markdown, LaTeX, or structured
 JSON.

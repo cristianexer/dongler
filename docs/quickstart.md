@@ -4,18 +4,22 @@ sidebar_position: 2
 
 # Quick Start
 
-Install the package for the ecosystem you use:
+Install the package for the ecosystem you use. Python is the shortest path for
+experiments and ingestion jobs, Node.js fits services and queues, Rust exposes
+the core API directly, and the CLI is useful for inspection.
 
 ```bash
-cargo install dongler
 pip install dongler
 npm install @cristianexer/dongler
+cargo install dongler
 ```
 
 For Rust library usage, depend on `dongler-core`. The `dongler` crate is the CLI
 package.
 
 ## Python
+
+Parse a PDF into all three output formats:
 
 ```python
 import dongler
@@ -38,13 +42,19 @@ for page in data["pages"]:
 ## TypeScript
 
 ```ts
-import { load } from "@cristianexer/dongler";
+import { load, loadMany } from "@cristianexer/dongler";
 
 const doc = load("report.pdf");
 
 console.log(doc.metadata.block_count);
 console.log(doc.toMarkdown());
 console.log(doc.toLatex());
+
+for (const result of loadMany(["report.pdf", "notes.txt"])) {
+  if (!result.ok) {
+    console.error(`${result.path}: ${result.error}`);
+  }
+}
 ```
 
 ## Rust

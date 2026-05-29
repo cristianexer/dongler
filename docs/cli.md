@@ -31,13 +31,20 @@ extraction_status: supported
 
 ## Extract
 
-Supported text, PDF, Office, web/email, annotation, and image formats work
-through the same command:
+PDFs are the primary workflow:
+
+```bash
+dongler extract invoice.pdf --format json
+dongler extract invoice.pdf --format markdown
+dongler extract invoice.pdf --format latex
+```
+
+Supported text, Office, web/email, annotation, and image formats work through
+the same command:
 
 ```bash
 dongler extract notes.txt --format markdown
 dongler extract notes.txt --format latex
-dongler extract invoice.pdf --format json
 dongler extract deck.pptx --format markdown
 dongler extract notes.odt --format markdown
 dongler extract annotations.json --format markdown

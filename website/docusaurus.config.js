@@ -67,6 +67,12 @@ const config = {
           editUrl: "https://github.com/cristianexer/dongler/tree/main/",
         },
         blog: false,
+        sitemap: {
+          changefreq: "weekly",
+          priority: 0.7,
+          ignorePatterns: ["/tags/**"],
+          filename: "sitemap.xml",
+        },
         theme: {
           customCss: require.resolve("./src/css/custom.css"),
         },
@@ -105,6 +111,7 @@ const config = {
             { label: "Introduction", to: "/docs/intro" },
             { label: "Quick Start", to: "/docs/quickstart" },
             { label: "PDF Workflow", to: "/docs/pdf-workflow" },
+            { label: "LLM Context", href: "https://cristianexer.github.io/dongler/llms.txt" },
           ],
         },
         {

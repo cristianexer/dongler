@@ -5,7 +5,8 @@ sidebar_position: 3
 # Developer Guide
 
 Dongler is built for a simple integration path: install one package, pass it a
-document path, and choose the output your application needs.
+document path, inspect the document object when needed, and choose the output
+your application needs.
 
 ## Pick a Runtime
 
@@ -32,9 +33,9 @@ data = doc.to_dict()
 ```
 
 The Markdown renderer is the fastest path when you need readable text for
-review, indexing, or downstream text processing. The JSON output is better when
-you need metadata, page numbers, block types, bounding boxes, warnings, images,
-or table cells.
+review, indexing, RAG ingestion, or downstream text processing. The JSON output
+is better when you need metadata, page numbers, block types, bounding boxes,
+warnings, images, or table cells.
 
 ## Handle Failures
 
@@ -100,3 +101,17 @@ hosted API and does not require an OCR or LLM dependency for digitally born
 PDFs. If your workload includes scanned PDFs, add OCR as a separate step and
 feed the OCR output into your own pipeline until Dongler's optional OCR path is
 ready.
+
+## Prepare a Release
+
+The repository keeps versions in package manifests and uses CI to publish after
+tests and package builds pass. Use the release helper to bump all package
+surfaces together:
+
+```bash
+python3 scripts/prepare-release.py <version>
+```
+
+The script updates manifests, refreshes lock files, runs the version consistency
+check, and prints the exact verification and push commands. Avoid hardcoded
+version text in docs unless it is necessary for a historical note.

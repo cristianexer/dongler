@@ -1,6 +1,9 @@
-.PHONY: test test-rust test-python test-js test-docs build build-rust build-python build-js build-docs eval-data eval-smoke bench-data bench-run bench publish-dry-run
+.PHONY: test test-rust test-python test-js test-docs test-release build build-rust build-python build-js build-docs eval-data eval-smoke bench-data bench-run bench publish-dry-run
 
-test: test-rust test-python test-js test-docs
+test: test-release test-rust test-python test-js test-docs
+
+test-release:
+	python3 scripts/check-versions.py
 
 test-rust:
 	cargo test --workspace
@@ -18,6 +21,7 @@ test-docs:
 	cd website && npm install
 	cd website && npm audit --audit-level=high
 	cd website && NO_UPDATE_NOTIFIER=1 npm run build
+	python3 scripts/check-site-metadata.py website/build
 
 build: build-rust build-python build-js build-docs
 

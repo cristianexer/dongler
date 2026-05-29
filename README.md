@@ -10,13 +10,14 @@
   <a href="https://www.npmjs.com/package/@cristianexer/dongler"><img alt="npm package" src="https://img.shields.io/npm/v/@cristianexer/dongler?style=for-the-badge&logo=npm&logoColor=white&label=npm&color=CB3837"></a>
 </p>
 
-Dongler is a fast, Rust-native document extraction package for developers who
-need to parse PDFs and other documents into Markdown, LaTeX, or structured
-JSON.
+Dongler is a fast, Rust-native PDF extraction package for developers who need
+clean Markdown, LaTeX, or structured JSON without wiring together a stack of
+document tools.
 
 It is designed around the practical path-first workflow: load a file, inspect
-the document object, then render the output format your pipeline needs. The same
-core engine powers the CLI, Python package, TypeScript package, and Rust API.
+the document object when needed, then render the output format your pipeline
+needs. The same core engine powers the CLI, Python package, TypeScript package,
+and Rust API.
 
 ## Install
 
@@ -69,14 +70,26 @@ fn main() -> dongler_core::Result<()> {
 
 - Markdown, LaTeX, and JSON renderers from the same document object.
 - Page, block, table, image, warning, and metadata fields for downstream code.
-- Rust-native PDF extraction with no hosted service dependency.
-- Python and TypeScript bindings over the same Rust core.
+- Rust-native PDF extraction with no hosted service, API key, LLM, or OCR
+  dependency for digitally born PDFs.
+- Python, TypeScript, Rust, and CLI entrypoints over the same core.
 - Batch APIs that return one result per file, so one unsupported document does
   not stop a job.
 
+## Why Dongler
+
+Use Dongler when the job starts with a document path and the next step needs
+useful text quickly:
+
+- Convert PDFs to Markdown for indexing, review, or RAG ingestion.
+- Keep page/block/table/image metadata available through JSON.
+- Run locally in scripts, services, queues, notebooks, and shell workflows.
+- Use the same extraction model across Python, Node.js, Rust, and the CLI.
+
 ## Supported Inputs
 
-Dongler supports native extraction for PDFs, DOCX, XLSX, PPTX, ODT/ODS/ODP,
+Dongler focuses on digitally born PDFs and also supports native extraction for
+DOCX, XLSX, PPTX, ODT/ODS/ODP,
 HTML/XML, EML, JSON/JSONL, CSV/TSV, image metadata including TIFF, and plain
 text/Markdown/TeX today. It also supports gzip-compressed text/JSON/XML/CSV
 corpus files, bare gzip source files, and zip/tar/tar.gz source packages.
@@ -167,6 +180,7 @@ Python, and TypeScript packages.
 - [Quick start](https://cristianexer.github.io/dongler/docs/quickstart)
 - [Developer guide](https://cristianexer.github.io/dongler/docs/developer-guide)
 - [API reference](https://cristianexer.github.io/dongler/docs/api)
+- [LLM context](https://cristianexer.github.io/dongler/llms.txt)
 
 ## Benchmarks
 

@@ -14,7 +14,7 @@ Python:
 ```python
 import dongler
 
-doc = dongler.load("notes.txt")
+doc = dongler.load("report.pdf")
 doc.to_markdown()
 doc.to_latex()
 doc.to_json()
@@ -26,7 +26,7 @@ TypeScript:
 ```ts
 import { load } from "@cristianexer/dongler";
 
-const doc = load("notes.txt");
+const doc = load("report.pdf");
 doc.toMarkdown();
 doc.toLatex();
 doc.toJson();
@@ -36,7 +36,7 @@ doc.toObject();
 Rust:
 
 ```rust
-let doc = dongler_core::load_path("notes.txt")?;
+let doc = dongler_core::load_path("report.pdf")?;
 doc.to_markdown()?;
 doc.to_latex()?;
 doc.to_json()?;

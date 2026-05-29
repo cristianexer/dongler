@@ -2,17 +2,18 @@
 sidebar_position: 6
 ---
 
-# Python and TypeScript Bindings
+# Language Bindings
 
-The Python and TypeScript packages are thin wrappers over the Rust core. They do
-not duplicate extraction logic.
+The Python and TypeScript packages are thin wrappers over the Rust core. The
+Rust library exposes the same document model directly, and the CLI uses the same
+engine for inspection and extraction.
 
-## Python Objects
+## Python
 
 ```python
 import dongler
 
-doc = dongler.load("notes.txt")
+doc = dongler.load("report.pdf")
 
 doc.metadata
 doc.pages
@@ -24,12 +25,12 @@ doc.to_dict()
 
 `to_json()` returns a JSON string. `to_dict()` returns a native Python dict.
 
-## TypeScript Objects
+## TypeScript
 
 ```ts
 import { load } from "@cristianexer/dongler";
 
-const doc = load("notes.txt");
+const doc = load("report.pdf");
 
 doc.metadata;
 doc.pages;
@@ -41,14 +42,12 @@ doc.toObject();
 
 `toJson()` returns a JSON string. `toObject()` returns the typed document data.
 
-## PDF Usage
+## Rust
 
-The same object API works for PDFs:
-
-```ts
-const doc = load("invoice.pdf");
-const markdown = doc.toMarkdown();
-const latex = doc.toLatex();
+```rust
+let doc = dongler_core::load_path("report.pdf")?;
+let markdown = doc.to_markdown()?;
+let json = doc.to_json()?;
 ```
 
 PDF documents expose the same render methods plus rich page/block fields such as

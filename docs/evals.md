@@ -43,11 +43,11 @@ coverage, source-anchor coverage, pages per second, native coverage score, and
 ground-truth accuracy where the evaluated file has an aligned local target.
 Ground-truth accuracy is token-F1 for aligned text targets, check-weighted
 olmOCR unit pass rate for downloaded olmOCR JSONL checks, or full-image IoU for
-image-only crop datasets. PDFs are preferred when a dataset has them. If no PDFs are present,
-structured JSON/CSV/XML annotations are preferred over raw images, with image
-files and supported text/Office/OpenDocument/HTML/XML/email/source files used as
-fallbacks. Dataset ground-truth accuracy stays `n/a` only when no aligned local
-target signal is available for the evaluated files.
+image-only crop datasets. PDFs are preferred when a dataset has them. If no PDFs
+are present, structured JSON/CSV/XML annotations are preferred over raw images,
+with image files and supported text/Office/OpenDocument/HTML/XML/email/source
+files used as fallbacks. Dataset ground-truth accuracy stays `n/a` only when no
+aligned local target signal is available for the evaluated files.
 
 Native structured fallbacks currently include COCO JSON layout annotations,
 DocBank token-label text annotations, PubTabNet JSONL table structure

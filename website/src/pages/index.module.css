@@ -88,6 +88,65 @@
   overflow: hidden;
 }
 
+.packageBand {
+  background: var(--dongler-bg);
+  border-bottom: 1px solid var(--dongler-border);
+}
+
+.packageInner {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0 auto;
+  max-width: 1160px;
+  padding: 1.35rem 2rem;
+}
+
+.packageLink {
+  align-items: center;
+  border: 1px solid var(--dongler-border);
+  border-radius: 8px;
+  color: var(--dongler-ink);
+  display: flex;
+  gap: 0.9rem;
+  min-width: 0;
+  padding: 0.9rem 1rem;
+  text-decoration: none;
+}
+
+.packageLink:hover {
+  border-color: var(--ifm-color-primary);
+  color: var(--dongler-ink);
+  text-decoration: none;
+}
+
+.packageIcon {
+  align-items: center;
+  background: #ecfaf9;
+  border-radius: 8px;
+  color: var(--ifm-color-primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 2rem;
+  justify-content: center;
+  width: 2rem;
+}
+
+.packageLink strong {
+  display: block;
+  font-size: 0.92rem;
+  margin-bottom: 0.2rem;
+}
+
+.packageLink code {
+  background: transparent;
+  border: 0;
+  color: var(--dongler-muted);
+  font-size: 0.82rem;
+  padding: 0;
+  white-space: normal;
+}
+
 .panelBar {
   align-items: center;
   background: linear-gradient(180deg, #152235, #0d1827);
@@ -325,7 +384,8 @@
 @media (max-width: 860px) {
   .heroInner,
   .featureBand,
-  .docsBand {
+  .docsBand,
+  .packageInner {
     padding-left: 1.1rem;
     padding-right: 1.1rem;
   }
@@ -334,6 +394,7 @@
   .featureBand,
   .docsBand,
   .featureGrid,
+  .packageInner,
   .panelBody {
     grid-template-columns: 1fr;
   }

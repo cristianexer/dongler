@@ -1,9 +1,10 @@
 import dongler
 import json
+from importlib.metadata import version as package_version
 
 
 def test_import_exposes_version():
-    assert dongler.__version__ == "0.3.3"
+    assert dongler.__version__ == package_version("dongler")
 
 
 def test_parse_text_returns_native_dict():

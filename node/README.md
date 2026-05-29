@@ -1,6 +1,7 @@
-# dongler
+# @cristianexer/dongler
 
-TypeScript bindings for Dongler, a fast Rust-native document extraction engine.
+TypeScript bindings for Dongler, a fast Rust-native PDF and document extraction
+engine.
 
 Dongler is designed around a simple workflow: load a document path, receive a
 document object, then render Markdown, LaTeX, or JSON from that object.
@@ -18,7 +19,7 @@ npm install @cristianexer/dongler
 
 ## PDF Workflow
 
-Parse a PDF into Markdown, LaTeX, or JSON:
+Parse a PDF into Markdown, LaTeX, or JSON locally:
 
 ```ts
 import { load } from "@cristianexer/dongler";

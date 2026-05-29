@@ -101,6 +101,27 @@ const docsPreview = [
   },
 ];
 
+const packageLinks = [
+  {
+    icon: faCode,
+    label: "PyPI",
+    href: "https://pypi.org/project/dongler/",
+    command: "pip install dongler",
+  },
+  {
+    icon: faTerminal,
+    label: "crates.io",
+    href: "https://crates.io/crates/dongler",
+    command: "cargo install dongler",
+  },
+  {
+    icon: faLayerGroup,
+    label: "npm",
+    href: "https://www.npmjs.com/package/@cristianexer/dongler",
+    command: "npm install @cristianexer/dongler",
+  },
+];
+
 export default function Home() {
   return (
     <Layout
@@ -205,6 +226,22 @@ data = doc.to_dict()
                 </div>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section className={styles.packageBand} aria-label="Package links">
+          <div className={styles.packageInner}>
+            {packageLinks.map((item) => (
+              <a className={styles.packageLink} href={item.href} key={item.label}>
+                <span className={styles.packageIcon} aria-hidden="true">
+                  <FontAwesomeIcon icon={item.icon} />
+                </span>
+                <span>
+                  <strong>{item.label}</strong>
+                  <code>{item.command}</code>
+                </span>
+              </a>
+            ))}
           </div>
         </section>
 

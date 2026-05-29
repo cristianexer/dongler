@@ -22,7 +22,8 @@ latex = doc.to_latex()
 
 - Preserve readable page order.
 - Extract text into paragraphs and sections.
-- Convert positioned and ruled tables into table blocks.
+- Convert positioned and ruled tables into structured table blocks where the
+  detected grid is reliable.
 - Carry useful metadata.
 - Preserve block/page bounding boxes for citations.
 - Record image object positions and source anchors.
@@ -46,6 +47,16 @@ If `word_count` and `block_count` are both zero for a visually simple PDF, the
 file may be scanned, image-only, encrypted in an unusual way, or using a PDF
 encoding path Dongler does not yet model. Keep a small fixture for that document
 and file an issue with the PDF if it can be shared.
+
+For table-heavy PDFs, inspect JSON in addition to Markdown:
+
+```bash
+dongler extract report.pdf --format json
+```
+
+The JSON output includes page/block geometry, table rows/cells, images, source
+anchors, and warnings that are intentionally not all visible in rendered
+Markdown.
 
 ## Native-First Scope
 

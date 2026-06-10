@@ -1112,26 +1112,33 @@ fn prefers_wide_gap_before_tight_band(
 }
 
 fn text_lines_in_reading_order(lines: &[TextLine]) -> Vec<&TextLine> {
+    let generic_columns = detect_text_columns(lines);
+    // The paired detector only models two columns, so prefer the generic
+    // splitter when it recovers 3+ columns; otherwise keep the tuned paired
+    // path as the primary two-column handler.
+    if let Some(columns) = &generic_columns {
+        if columns.len() >= 3 {
+            return order_generic_columns(columns.clone());
+        }
+    }
     if let Some(layout) = detect_paired_text_columns(lines) {
         return order_column_layout(layout);
     }
-    if let Some(mut columns) = detect_text_columns(lines) {
-        columns.sort_by(|left, right| column_x(left).total_cmp(&column_x(right)));
-        return columns
-            .into_iter()
-            .flat_map(|mut column| {
-                column.sort_by(|left, right| {
-                    right
-                        .bbox
-                        .y
-                        .total_cmp(&left.bbox.y)
-                        .then(left.bbox.x.total_cmp(&right.bbox.x))
-                });
-                column
-            })
-            .collect();
+    if let Some(columns) = generic_columns {
+        return order_generic_columns(columns);
     }
     lines.iter().collect()
+}
+
+fn order_generic_columns(mut columns: Vec<Vec<&TextLine>>) -> Vec<&TextLine> {
+    columns.sort_by(|left, right| column_x(left).total_cmp(&column_x(right)));
+    columns
+        .into_iter()
+        .flat_map(|mut column| {
+            sort_lines_top_down(&mut column);
+            column
+        })
+        .collect()
 }
 
 fn order_column_layout(mut layout: ColumnLayout<'_>) -> Vec<&TextLine> {
@@ -1311,36 +1318,40 @@ fn detect_text_columns(lines: &[TextLine]) -> Option<Vec<Vec<&TextLine>>> {
         .collect::<Vec<_>>();
     centers.sort_by(|left, right| left.1.total_cmp(&right.1));
 
-    let (split_index, largest_gap) = centers
-        .windows(2)
-        .enumerate()
-        .map(|(index, window)| (index + 1, window[1].1 - window[0].1))
-        .max_by(|left, right| left.1.total_cmp(&right.1))?;
-    if largest_gap < 90.0 {
+    // Split at every significant horizontal gap between consecutive center-x
+    // values, so 3+ column layouts are recovered rather than collapsing all but
+    // the single widest gap. A lone gap reproduces the original two-column split.
+    let mut boundaries = vec![0usize];
+    boundaries.extend(
+        centers
+            .windows(2)
+            .enumerate()
+            .filter(|(_, window)| window[1].1 - window[0].1 >= 90.0)
+            .map(|(index, _)| index + 1),
+    );
+    boundaries.push(centers.len());
+    if boundaries.len() < 3 {
         return None;
     }
 
-    let (left_indices, right_indices) = centers.split_at(split_index);
-    if left_indices.len() < 2 || right_indices.len() < 2 {
-        return None;
+    let mut columns = Vec::with_capacity(boundaries.len() - 1);
+    for window in boundaries.windows(2) {
+        let group = &centers[window[0]..window[1]];
+        if group.len() < 2 {
+            return None;
+        }
+        columns.push(group.iter().map(|(index, _)| &lines[*index]).collect::<Vec<_>>());
     }
 
-    let left = left_indices
-        .iter()
-        .map(|(index, _)| &lines[*index])
-        .collect::<Vec<_>>();
-    let right = right_indices
-        .iter()
-        .map(|(index, _)| &lines[*index])
-        .collect::<Vec<_>>();
-
-    let overlap = y_overlap(&left, &right)?;
+    // Adjacent columns must overlap vertically to be genuine side-by-side text.
     let average_height = average_line_height(lines);
-    if overlap < average_height {
-        return None;
+    for pair in columns.windows(2) {
+        if y_overlap(&pair[0], &pair[1])? < average_height {
+            return None;
+        }
     }
 
-    Some(vec![left, right])
+    Some(columns)
 }
 
 fn column_x(lines: &[&TextLine]) -> f32 {

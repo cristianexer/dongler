@@ -590,6 +590,33 @@ fn load_path_uses_font_ascent_descent_for_glyph_bbox() {
 }
 
 #[test]
+fn load_path_orders_three_pdf_columns_left_to_right() {
+    let path = write_temp_bytes("three-col.pdf", three_column_pdf());
+
+    let document = load_path(&path).unwrap();
+    let texts: Vec<&str> = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        texts,
+        vec![
+            "Alpha one",
+            "Alpha two",
+            "Bravo one",
+            "Bravo two",
+            "Charlie one",
+            "Charlie two",
+        ]
+    );
+}
+
+#[test]
 fn load_path_decodes_ascii85_flate_pdf_streams() {
     let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
 
@@ -2687,6 +2714,16 @@ end";
     .into_bytes();
     pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
     pdf
+}
+
+fn three_column_pdf() -> Vec<u8> {
+    // Three columns with independent baselines, as in real multi-column text, so
+    // each column's lines group separately rather than into shared rows.
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 1 0 0 1 72 720 Tm (Alpha one) Tj 1 0 0 1 72 700 Tm (Alpha two) Tj 1 0 0 1 272 715 Tm (Bravo one) Tj 1 0 0 1 272 695 Tm (Bravo two) Tj 1 0 0 1 472 710 Tm (Charlie one) Tj 1 0 0 1 472 690 Tm (Charlie two) Tj ET",
+        "",
+    )
 }
 
 fn font_metrics_pdf() -> Vec<u8> {

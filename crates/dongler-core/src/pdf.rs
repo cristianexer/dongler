@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
 
 use flate2::read::ZlibDecoder;
 use rayon::prelude::*;
@@ -274,9 +275,33 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         ));
     }
 
+    // Decode each font once per document. Fonts (and their compressed ToUnicode
+    // CMaps) are shared resources referenced by most pages, so decoding them in
+    // every page re-inflates the same streams pages*fonts times.
+    let mut font_object_numbers: Vec<u32> = page_seeds
+        .iter()
+        .flat_map(|seed| {
+            let resource_body = resolve_resource_body(&seed.body, &object_map);
+            let resource_text = resource_body.as_deref().unwrap_or(&seed.body);
+            resolve_named_resource_refs(resource_text, "/Font", &object_map)
+                .into_values()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    font_object_numbers.sort_unstable();
+    font_object_numbers.dedup();
+    let font_cache: HashMap<u32, Arc<FontDecoder>> = font_object_numbers
+        .into_par_iter()
+        .filter_map(|number| {
+            object_map
+                .get(&number)
+                .map(|font| (number, Arc::new(font_decoder(font, &object_map))))
+        })
+        .collect();
+
     let page_extractions = page_seeds
         .par_iter()
-        .map(|seed| extract_page(seed, &object_map))
+        .map(|seed| extract_page(seed, &object_map, &font_cache))
         .collect::<Vec<_>>();
 
     let mut pages = Vec::with_capacity(page_extractions.len());
@@ -310,7 +335,11 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
     })
 }
 
-fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageExtraction {
+fn extract_page(
+    seed: &PageSeed,
+    object_map: &HashMap<u32, PdfObject>,
+    font_cache: &HashMap<u32, Arc<FontDecoder>>,
+) -> PageExtraction {
     let media_box = parse_number_array_after(&seed.body, "/MediaBox")
         .unwrap_or_else(|| vec![0.0, 0.0, 612.0, 792.0]);
     let width =
@@ -322,7 +351,7 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
     let resource_body = resolve_resource_body(&seed.body, object_map);
     let resource_text = resource_body.as_deref().unwrap_or(&seed.body);
     let xobjects = resolve_named_resource_refs(resource_text, "/XObject", object_map);
-    let fonts = load_font_decoders(resource_text, object_map);
+    let fonts = load_font_decoders(resource_text, object_map, font_cache);
 
     let mut warnings = Vec::new();
     let mut extraction = ContentExtraction {
@@ -407,7 +436,7 @@ fn interpret_content_stream(
     page_number: usize,
     source_object_ids: &[String],
     xobjects: &HashMap<String, u32>,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
     object_map: &HashMap<u32, PdfObject>,
 ) -> ContentExtraction {
     let mut state = GraphicsState::default();
@@ -645,7 +674,7 @@ fn push_text_run(
     state: &mut GraphicsState,
     source_object_ids: &[String],
     text: String,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) {
     let advance = text_advance_width(&text, state, fonts);
     if text.trim().is_empty() {
@@ -667,7 +696,7 @@ fn push_text_run(
 fn text_advance_width(
     text: &str,
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> f32 {
     let glyphs = text.chars().count() as f32;
     if glyphs == 0.0 {
@@ -2806,16 +2835,24 @@ fn group_text_runs(mut runs: Vec<TextRun>) -> Vec<TextLine> {
             .iter_mut()
             .find(|line| (line.bbox.y - run.bbox.y).abs() <= 3.0)
         {
+            // Extend the line bbox in O(1). The incremental AABB equals the full
+            // union over all runs, so the matching y used by `find` is identical
+            // to recomputing it from scratch each insert.
+            line.bbox = union_boxes([line.bbox, run.bbox]).unwrap_or(line.bbox);
             line.runs.push(run);
-            line.runs
-                .sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
-            line.bbox = union_boxes(line.runs.iter().map(|run| run.bbox)).unwrap_or(line.bbox);
         } else {
             lines.push(TextLine {
                 bbox: run.bbox,
                 runs: vec![run],
             });
         }
+    }
+
+    // Sort each line's runs left-to-right once at the end, instead of re-sorting
+    // the whole line on every insert (which was O(k^2 log k) per line).
+    for line in &mut lines {
+        line.runs
+            .sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
     }
 
     lines
@@ -3436,14 +3473,19 @@ fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, PdfObject>) 
 fn load_font_decoders(
     resource_text: &str,
     object_map: &HashMap<u32, PdfObject>,
-) -> HashMap<String, FontDecoder> {
+    font_cache: &HashMap<u32, Arc<FontDecoder>>,
+) -> HashMap<String, Arc<FontDecoder>> {
     resolve_named_resource_refs(resource_text, "/Font", object_map)
         .into_iter()
         .map(|(name, object_number)| {
-            let decoder = object_map
-                .get(&object_number)
-                .map(|font| font_decoder(font, object_map))
-                .unwrap_or_default();
+            let decoder = font_cache.get(&object_number).cloned().unwrap_or_else(|| {
+                Arc::new(
+                    object_map
+                        .get(&object_number)
+                        .map(|font| font_decoder(font, object_map))
+                        .unwrap_or_default(),
+                )
+            });
             (name, decoder)
         })
         .collect()
@@ -3929,7 +3971,7 @@ fn parse_number_after(text: &str, key: &str) -> Option<f32> {
 fn first_text_operand(
     operands: &[Operand],
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> Option<String> {
     operands
         .first()
@@ -3939,7 +3981,7 @@ fn first_text_operand(
 fn operand_text(
     operand: &Operand,
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> Option<String> {
     match operand {
         Operand::Literal(bytes) | Operand::Hex(bytes) => Some(decode_pdf_text(
@@ -3947,7 +3989,8 @@ fn operand_text(
             state
                 .font_name
                 .as_ref()
-                .and_then(|font_name| fonts.get(font_name)),
+                .and_then(|font_name| fonts.get(font_name))
+                .map(|font| font.as_ref()),
         )),
         _ => None,
     }
@@ -3956,7 +3999,7 @@ fn operand_text(
 fn text_from_array(
     items: &[Operand],
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> String {
     let mut text = String::new();
     for item in items {

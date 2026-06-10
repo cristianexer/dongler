@@ -57,6 +57,12 @@ struct TextRun {
     baseline_y: f32,
     font: Option<String>,
     size: f32,
+    /// Page-space advance of a single space glyph in this run's font/size, used to
+    /// decide whether a horizontal gap to the next run is a word break. Producers
+    /// often position fragments with `Td`/`TJ` and omit the space character, so the
+    /// gap is the only signal; sizing the threshold to the actual space width keeps
+    /// word segmentation correct across fonts and zoom levels.
+    space_width: f32,
     bold: bool,
     italic: bool,
     source_object_ids: Vec<String>,
@@ -744,12 +750,14 @@ fn push_text_run(
     let bbox = text_run_bbox(state, advance, ascent, descent);
     let (base_x, base_y) = state.text_matrix.point(0.0, state.text_rise);
     let (_, baseline_y) = state.ctm.point(base_x, base_y);
+    let space_width = space_advance_width(state, fonts);
     extraction.text_runs.push(TextRun {
         text,
         bbox,
         baseline_y,
         font: state.font_name.clone(),
         size: state.font_size,
+        space_width,
         bold,
         italic,
         source_object_ids: source_object_ids.to_vec(),
@@ -775,12 +783,44 @@ fn text_advance_width(
         .chars()
         .map(|character| {
             font.and_then(|font| font.widths.get(&character).copied())
-                .map(|width| width / 1000.0 * state.font_size)
-                .unwrap_or(state.font_size * 0.5)
+                .unwrap_or_else(|| default_glyph_width(character))
+                / 1000.0
+                * state.font_size
         })
         .sum::<f32>();
     let spacing = glyphs * state.char_spacing + spaces * state.word_spacing;
     ((base + spacing) * state.horizontal_scaling).max(0.0)
+}
+
+/// Approximate advance (1/1000 em) of a glyph when the font carries no width for
+/// it. Uses Helvetica's metrics, which track real proportional Latin widths far
+/// better than a flat half-em: narrow glyphs (`i l . ,`) are ~250, wide ones
+/// (`m w M W`) ~850. Accurate advances are what let gap-based word segmentation
+/// work on fonts that omit `/Widths` (some subset and OCR-layer fonts).
+fn default_glyph_width(character: char) -> f32 {
+    match character {
+        ' ' | '!' | ',' | '.' | '/' | ':' | ';' | 'I' | '[' | '\\' | ']' | 'i' | 'j' | 'l'
+        | '|' | '\'' => 250.0,
+        '"' | '(' | ')' | '*' | '`' | '-' | 'f' | 'r' | 't' | '{' | '}' => 333.0,
+        'm' | 'M' | 'W' | 'w' | '@' => 850.0,
+        'A'..='Z' | '0'..='9' | '$' | '+' | '<' | '=' | '>' | '?' | '_' | '~' => 600.0,
+        _ => 500.0,
+    }
+}
+
+/// Page-space advance of one space glyph in the current font/size, scaled by the
+/// horizontal scaling. Falls back to a quarter-em when the font has no space-glyph
+/// metric, which is the typical width of a space across text fonts.
+fn space_advance_width(state: &GraphicsState, fonts: &HashMap<String, Arc<FontDecoder>>) -> f32 {
+    let from_font = state
+        .font_name
+        .as_ref()
+        .and_then(|font_name| fonts.get(font_name))
+        .and_then(|font| font.widths.get(&' ').copied())
+        .filter(|width| *width > 0.0)
+        .map(|width| width / 1000.0 * state.font_size);
+    let width = from_font.unwrap_or_else(|| default_glyph_width(' ') / 1000.0 * state.font_size);
+    (width * state.horizontal_scaling).max(0.0)
 }
 
 fn text_run_bbox(state: &GraphicsState, advance: f32, ascent: f32, descent: f32) -> BBox {
@@ -1411,24 +1451,80 @@ fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> 
     })
 }
 
+/// Assemble a line's text from its x-sorted runs. A space is placed between two
+/// runs only when the producer already encoded one (a space at the boundary) or
+/// the horizontal gap is wide enough to be a word break, sized to the font's own
+/// space-glyph width. Run-internal spaces are preserved verbatim — only the
+/// inter-run boundary is decided here. This replaces the old `trim().join(" ")`,
+/// which both dropped producer spaces (joining words: "Netincome") and inserted
+/// spurious ones (splitting fragmented words: "Y ear", "2 0 5 4 9").
+fn join_runs_spaced(runs: &[TextRun]) -> String {
+    let mut out = String::new();
+    // (end_x, space_width, baseline_y, multi_char)
+    let mut previous: Option<(f32, f32, f32, bool)> = None;
+    for run in runs {
+        if run.text.is_empty() {
+            continue;
+        }
+        let multi_char = run.text.trim().chars().count() >= 2;
+        if let Some((prev_end_x, prev_space_width, prev_baseline_y, prev_multi)) = previous {
+            let boundary_has_space = out.ends_with(char::is_whitespace)
+                || run.text.starts_with(char::is_whitespace);
+            let gap = run.bbox.x - prev_end_x;
+            // Two complete (multi-char) tokens are separate words, so even a tight
+            // gap is a word break; a sequence of single glyphs may be a
+            // letter-spaced word, so only a clear gap separates them. This is what
+            // distinguishes "It occurs" (two words, ~2pt apart) from a fragmented
+            // or letter-spaced "U N I T E D" that should read "UNITED".
+            let tokens_separate = prev_multi || multi_char;
+            let threshold =
+                word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate);
+            // A meaningful baseline shift means the adjacent run sits on a
+            // different line of text (a super/subscript or a stacked cell being
+            // flattened); keep those tokens apart even when they abut horizontally.
+            let baseline_break =
+                (prev_baseline_y - run.baseline_y).abs() >= run.size.max(1.0) * 0.18;
+            if !out.is_empty() && !boundary_has_space && (gap >= threshold || baseline_break) {
+                out.push(' ');
+            }
+        }
+        out.push_str(&run.text);
+        previous = Some((
+            run.bbox.x + run.bbox.width,
+            run.space_width,
+            run.baseline_y,
+            multi_char,
+        ));
+    }
+    out
+}
+
+/// Minimum horizontal gap (page units) between two runs that reads as a word
+/// break. Scaled to the wider of the two runs' space-glyph widths (quarter-em
+/// floor when a font lacks the metric). Separate multi-char tokens use a small
+/// fraction (a real but tight inter-word space still counts), while single-glyph
+/// runs need most of a space width so a letter-spaced word is not torn apart.
+fn word_gap_threshold(
+    left_space_width: f32,
+    right_space_width: f32,
+    size: f32,
+    tokens_separate: bool,
+) -> f32 {
+    let space = left_space_width
+        .max(right_space_width)
+        .max(size * 0.25)
+        .max(0.1);
+    space * if tokens_separate { 0.1 } else { 0.4 }
+}
+
 fn text_from_line_runs(line: &TextLine) -> String {
     let runs = runs_sorted_by_x(line);
     if !line_has_math_script_context(&runs[..]) {
-        return runs
-            .iter()
-            .map(|run| run.text.trim())
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        return join_runs_spaced(&runs[..]);
     }
 
     let Some(baseline_y) = dominant_baseline_y(&runs[..]) else {
-        return runs
-            .iter()
-            .map(|run| run.text.trim())
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        return join_runs_spaced(&runs[..]);
     };
     let mut pieces: Vec<String> = Vec::new();
 
@@ -1492,9 +1588,11 @@ fn line_has_math_script_context(runs: &[TextRun]) -> bool {
     joined.chars().any(|character| {
         matches!(
             character,
+            // ASCII '-' is excluded: it is overwhelmingly a hyphen in prose
+            // ("non-trade", "well-known"), so triggering math assembly on it
+            // mangles hyphenated words. The real math minus is U+2212 ('−').
             '=' | '+'
                 | '−'
-                | '-'
                 | '×'
                 | '*'
                 | '^'
@@ -1513,7 +1611,16 @@ fn line_has_math_script_context(runs: &[TextRun]) -> bool {
     }) || runs.windows(2).any(|window| {
         let left = window[0].text.trim();
         let right = window[1].text.trim();
-        is_math_script_base(left) && is_math_script_text(right)
+        // Require an actual baseline offset: a super/subscript sits visibly above
+        // or below its base. Without this the predicate fires on ordinary
+        // glyph-by-glyph prose (every letter is a single alphanumeric "base"
+        // followed by another "script"), which is the norm in Chrome/Skia PDFs,
+        // wrongly routing plain text through the script-assembly path.
+        let baseline_delta = (window[0].baseline_y - window[1].baseline_y).abs();
+        let script_offset = window[0].size.max(window[1].size) * 0.2;
+        baseline_delta >= script_offset
+            && is_math_script_base(left)
+            && is_math_script_text(right)
     })
 }
 
@@ -2638,6 +2745,7 @@ fn text_run_from_cell_runs(runs: &[TextRun]) -> Option<TextRun> {
         baseline_y: runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32,
         font: runs.iter().find_map(|run| run.font.clone()),
         size: runs.iter().map(|run| run.size).sum::<f32>() / runs.len() as f32,
+        space_width: runs.iter().map(|run| run.space_width).fold(0.0, f32::max),
         bold: !runs.is_empty() && runs.iter().all(|run| run.bold),
         italic: !runs.is_empty() && runs.iter().all(|run| run.italic),
         source_object_ids: source_ids_for_runs(runs),
@@ -3725,7 +3833,11 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, Arc<PdfObject>>) -> 
 
     let mut decoder = parse_to_unicode_cmap(&lossy(&cmap_stream));
     decoder.encoding = encoding;
-    decoder.widths = widths;
+    decoder.widths = if widths.is_empty() {
+        cid_char_widths(&decoder.cmap, &font_cid_widths(&font_body, object_map))
+    } else {
+        widths
+    };
     decoder.bold = bold;
     decoder.italic = italic;
     decoder.ascent = ascent;
@@ -3828,6 +3940,123 @@ fn font_widths(font_body: &str, encoding: &HashMap<u8, String>) -> HashMap<char,
             chars.next().is_none().then_some((character, width))
         })
         .collect()
+}
+
+/// Glyph widths for a Type0 (composite) font, read from its descendant CIDFont's
+/// `/W` array and keyed by CID. Simple fonts carry `/FirstChar`+`/Widths`, but
+/// composite fonts — the norm for born-digital PDFs from Chrome/Skia, LaTeX, and
+/// modern Office exporters — keep per-CID widths in `/DescendantFonts[0]/W`.
+/// Without these every glyph falls back to a flat half-em, which destroys gap-based
+/// word segmentation. The `/W` array mixes two run encodings: `c [w1 w2 …]` (widths
+/// for consecutive CIDs starting at `c`) and `c_first c_last w` (one width for a
+/// CID range). Returns CID → width in 1/1000 em.
+fn font_cid_widths(font_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> HashMap<u32, f32> {
+    let mut widths = HashMap::new();
+    if parse_name_after(font_body, "/Subtype").as_deref() != Some("Type0") {
+        return widths;
+    }
+    let Some(descendant) = parse_refs_after_key(font_body, "/DescendantFonts")
+        .into_iter()
+        .next()
+    else {
+        return widths;
+    };
+    let Some(cidfont) = object_map.get(&(descendant as u32)) else {
+        return widths;
+    };
+    let body = lossy(&cidfont.body);
+    let Some((open, close)) = find_w_array(&body) else {
+        return widths;
+    };
+    let mut parser = ContentParser::new(&body.as_bytes()[open..=close]);
+    let Some(ContentToken::Operand(Operand::Array(items))) = parser.next_operand_or_operator() else {
+        return widths;
+    };
+
+    let mut index = 0;
+    while index < items.len() {
+        match (&items[index], items.get(index + 1)) {
+            (Operand::Number(first), Some(Operand::Array(list))) => {
+                let base = *first as i64;
+                for (offset, width) in list.iter().enumerate() {
+                    if let Operand::Number(width) = width {
+                        let cid = base + offset as i64;
+                        if cid >= 0 {
+                            widths.insert(cid as u32, *width);
+                        }
+                    }
+                }
+                index += 2;
+            }
+            (Operand::Number(first), Some(Operand::Number(last))) => {
+                if let Some(Operand::Number(width)) = items.get(index + 2) {
+                    let (lo, hi) = (*first as i64, *last as i64);
+                    if lo >= 0 && hi >= lo && hi - lo < 70_000 {
+                        for cid in lo..=hi {
+                            widths.insert(cid as u32, *width);
+                        }
+                    }
+                    index += 3;
+                } else {
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    widths
+}
+
+/// Locate the `/W` array of a CIDFont, returning the byte span of its `[ … ]`.
+/// Distinguishes the `/W` key from look-alikes (`/WMode`, `/Widths`) by requiring
+/// whitespace or `[` immediately after.
+fn find_w_array(body: &str) -> Option<(usize, usize)> {
+    let bytes = body.as_bytes();
+    let mut search = 0;
+    while let Some(rel) = body[search..].find("/W") {
+        let key_end = search + rel + 2;
+        if matches!(bytes.get(key_end), Some(byte) if is_ws(*byte) || *byte == b'[') {
+            let mut pos = key_end;
+            while pos < bytes.len() && is_ws(bytes[pos]) {
+                pos += 1;
+            }
+            if bytes.get(pos) == Some(&b'[') {
+                if let Some(close) = matching_array_close(body, pos) {
+                    return Some((pos, close));
+                }
+            }
+        }
+        search = key_end;
+    }
+    None
+}
+
+/// Translate CID-keyed widths into char-keyed widths via the font's ToUnicode
+/// cmap. For Identity-H (the universal Skia/LaTeX encoding) the CID is the numeric
+/// value of the 2-byte code, which is exactly the cmap key, so each single-char
+/// mapping yields one char → width pair.
+fn cid_char_widths(
+    cmap: &HashMap<Vec<u8>, String>,
+    cid_widths: &HashMap<u32, f32>,
+) -> HashMap<char, f32> {
+    let mut out = HashMap::new();
+    if cid_widths.is_empty() {
+        return out;
+    }
+    for (code, text) in cmap {
+        if code.is_empty() || code.len() > 4 {
+            continue;
+        }
+        let mut chars = text.chars();
+        let (Some(character), None) = (chars.next(), chars.next()) else {
+            continue;
+        };
+        let cid = code.iter().fold(0u32, |acc, byte| (acc << 8) | u32::from(*byte));
+        if let Some(width) = cid_widths.get(&cid) {
+            out.insert(character, *width);
+        }
+    }
+    out
 }
 
 fn font_encoding_differences(
@@ -4622,6 +4851,7 @@ mod tests {
             baseline_y: y,
             font: None,
             size,
+            space_width: size * 0.25,
             bold: false,
             italic: false,
             source_object_ids: Vec::new(),

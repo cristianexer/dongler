@@ -202,6 +202,23 @@ Coverage is `parse / bbox / anchors`. Ground-truth accuracy is token-F1, olmOCR 
 | arXiv source/PDF | missing | 0.0 MB | 0 | n/a / n/a / n/a | n/a | n/a |
 <!-- BENCHMARKS:END -->
 
+### Extraction-quality improvements
+
+A controlled A/B of the current parser against the previous release baseline — run on the full
+olmOCR-Bench corpus (1403 real PDFs, identical benchmark harness and release build) — isolates the
+gains from the recent reading-order, heading, and ligature work:
+
+| Signal | Before | After |
+| --- | ---: | ---: |
+| olmOCR reading-order checks passed | 320 / 1061 (30.2%) | 327 / 1061 (30.8%) |
+| Documents improved vs. regressed | — | 5 improved, 0 regressed |
+| Unexpanded ligature glyphs left in text (ﬁ ﬂ ﬃ …) | 2586 across 101 docs | 0 |
+| Headings emitted with a semantic level (H1/H2/H3) | 0 (single flat kind) | 1851 across 327 docs |
+| Parse success | 1403 / 1403 | 1403 / 1403 |
+
+Every other olmOCR check type (text presence, tables, math, absences) is identical between the two
+builds, confirming the performance refactors are output-preserving.
+
 ## License
 
 Dongler is MIT licensed. Copyright (c) 2026 Daniel Fat. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)

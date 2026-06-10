@@ -1,6 +1,6 @@
 [package]
 name = "dongler"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 license = "MIT"
 authors = ["Daniel Fat"]
@@ -11,5 +11,5 @@ keywords = ["pdf", "markdown", "latex", "document", "extraction"]
 categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
-dongler-core = { path = "../dongler-core", version = "0.3.6" }
+dongler-core = { path = "../dongler-core", version = "0.3.7" }
 clap = { version = "4.5", features = ["derive"] }

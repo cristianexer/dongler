@@ -177,6 +177,14 @@ pub struct TableCell {
     pub bbox: Option<BBox>,
     #[serde(default)]
     pub is_header: bool,
+    /// Number of grid columns this cell spans (1 for an ordinary cell). A value
+    /// greater than 1 marks a horizontally merged cell; the spanned-over column
+    /// positions are omitted from `cells`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub col_span: usize,
+    /// Number of grid rows this cell spans (1 for an ordinary cell).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub row_span: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,6 +250,14 @@ fn default_include_geometry() -> bool {
 
 fn default_include_assets() -> bool {
     true
+}
+
+fn one() -> usize {
+    1
+}
+
+fn is_one(value: &usize) -> bool {
+    *value == 1
 }
 
 fn is_false(value: &bool) -> bool {

@@ -118,6 +118,8 @@ fn grid_cells_page(value: &Value, page_number: usize) -> Option<Page> {
                 text,
                 bbox: cell.get("bbox").and_then(bbox_from_rect),
                 is_header: row_index == 0,
+                col_span: 1,
+                row_span: 1,
             });
         }
         if !text_row.is_empty() {
@@ -308,6 +310,8 @@ fn pubtabnet_table_cells(rows: &[PubTabNetRow]) -> Vec<TableCell> {
                     text: cell.text.clone(),
                     bbox: cell.bbox,
                     is_header: row_index == 0,
+                    col_span: 1,
+                    row_span: 1,
                 })
         })
         .collect()

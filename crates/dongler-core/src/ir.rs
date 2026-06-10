@@ -162,6 +162,10 @@ pub struct Span {
     pub font: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f32>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,4 +242,8 @@ fn default_include_geometry() -> bool {
 
 fn default_include_assets() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

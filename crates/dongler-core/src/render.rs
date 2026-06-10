@@ -85,7 +85,52 @@ fn render_markdown_text(text: &TextBlock) -> String {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    sanitize_markdown_text(&text.text)
+    let body = sanitize_markdown_text(&text.text);
+    let (bold, italic) = block_emphasis(text);
+    emphasize_markdown(&body, bold, italic)
+}
+
+/// Whether every non-blank span of a block is bold and/or italic, so the whole
+/// block can be wrapped in emphasis markers without losing the cleaned text.
+fn block_emphasis(block: &TextBlock) -> (bool, bool) {
+    let mut any = false;
+    let mut bold = true;
+    let mut italic = true;
+    for span in block.lines.iter().flat_map(|line| line.spans.iter()) {
+        if span.text.trim().is_empty() {
+            continue;
+        }
+        any = true;
+        bold &= span.bold;
+        italic &= span.italic;
+    }
+    if any {
+        (bold, italic)
+    } else {
+        (false, false)
+    }
+}
+
+fn emphasize_markdown(text: &str, bold: bool, italic: bool) -> String {
+    let marker = match (bold, italic) {
+        (true, true) => "***",
+        (true, false) => "**",
+        (false, true) => "*",
+        (false, false) => return text.to_owned(),
+    };
+    if text.is_empty() {
+        return text.to_owned();
+    }
+    format!("{marker}{text}{marker}")
+}
+
+fn emphasize_latex(text: &str, bold: bool, italic: bool) -> String {
+    match (bold, italic) {
+        (true, true) => format!("\\textbf{{\\textit{{{text}}}}}"),
+        (true, false) => format!("\\textbf{{{text}}}"),
+        (false, true) => format!("\\textit{{{text}}}"),
+        (false, false) => text.to_owned(),
+    }
 }
 
 fn render_markdown_table(table: &TableBlock) -> String {
@@ -191,7 +236,9 @@ fn render_latex_text(text: &TextBlock) -> String {
             return format!("\\begin{{itemize}}\n{}\n\\end{{itemize}}", items.join("\n"));
         }
     }
-    escape_latex(&text.text)
+    let body = escape_latex(&text.text);
+    let (bold, italic) = block_emphasis(text);
+    emphasize_latex(&body, bold, italic)
 }
 
 fn render_latex_table(table: &TableBlock) -> String {

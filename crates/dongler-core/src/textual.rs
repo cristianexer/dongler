@@ -214,6 +214,8 @@ fn hocr_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block> {
             bbox: word.bbox,
             font: None,
             size: None,
+            bold: false,
+            italic: false,
         })
         .collect::<Vec<_>>();
 
@@ -364,6 +366,8 @@ fn page_xml_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block
             bbox: word.bbox,
             font: None,
             size: None,
+            bold: false,
+            italic: false,
         })
         .collect::<Vec<_>>();
 
@@ -476,6 +480,8 @@ fn alto_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block> {
             bbox: word.bbox,
             font: None,
             size: None,
+            bold: false,
+            italic: false,
         })
         .collect::<Vec<_>>();
 

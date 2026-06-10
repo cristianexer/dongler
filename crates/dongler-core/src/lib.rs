@@ -305,6 +305,8 @@ fn insert_ocr_text_block(page: &mut Page, text: String) {
                     bbox,
                     font: None,
                     size: None,
+                    bold: false,
+                    italic: false,
                 }],
             }],
             source_anchors: vec![SourceAnchor {

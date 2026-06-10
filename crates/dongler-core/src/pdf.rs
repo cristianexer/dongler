@@ -54,6 +54,8 @@ struct TextRun {
     bbox: BBox,
     font: Option<String>,
     size: f32,
+    bold: bool,
+    italic: bool,
     source_object_ids: Vec<String>,
 }
 
@@ -111,6 +113,8 @@ struct FontDecoder {
     encoding: HashMap<u8, String>,
     widths: HashMap<char, f32>,
     max_code_len: usize,
+    bold: bool,
+    italic: bool,
 }
 
 impl FontDecoder {
@@ -683,11 +687,19 @@ fn push_text_run(
     }
 
     let bbox = text_run_bbox(state, advance);
+    let (bold, italic) = state
+        .font_name
+        .as_ref()
+        .and_then(|name| fonts.get(name))
+        .map(|font| (font.bold, font.italic))
+        .unwrap_or((false, false));
     extraction.text_runs.push(TextRun {
         text,
         bbox,
         font: state.font_name.clone(),
         size: state.font_size,
+        bold,
+        italic,
         source_object_ids: source_object_ids.to_vec(),
     });
     state.text_matrix = state.text_matrix.translate(advance, 0.0);
@@ -1319,6 +1331,8 @@ fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> 
                         bbox: Some(run.bbox),
                         font: run.font.clone(),
                         size: Some(run.size),
+                        bold: run.bold,
+                        italic: run.italic,
                     })
                 })
                 .collect(),
@@ -2506,6 +2520,8 @@ fn text_run_from_cell_runs(runs: &[TextRun]) -> Option<TextRun> {
         bbox,
         font: runs.iter().find_map(|run| run.font.clone()),
         size: runs.iter().map(|run| run.size).sum::<f32>() / runs.len() as f32,
+        bold: !runs.is_empty() && runs.iter().all(|run| run.bold),
+        italic: !runs.is_empty() && runs.iter().all(|run| run.italic),
         source_object_ids: source_ids_for_runs(runs),
     })
 }
@@ -3511,6 +3527,7 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
     let font_body = lossy(&font.body);
     let encoding = font_encoding_differences(&font_body, object_map);
     let widths = font_widths(&font_body, &encoding);
+    let (bold, italic) = font_style(&font_body, object_map);
     let Some(to_unicode_ref) = parse_refs_after_key(&font_body, "/ToUnicode")
         .into_iter()
         .next()
@@ -3520,6 +3537,8 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             encoding,
             widths,
             max_code_len: 1,
+            bold,
+            italic,
         };
     };
     let Some(to_unicode) = object_map.get(&(to_unicode_ref as u32)) else {
@@ -3528,6 +3547,8 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             encoding,
             widths,
             max_code_len: 1,
+            bold,
+            italic,
         };
     };
     let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode) else {
@@ -3536,13 +3557,65 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             encoding,
             widths,
             max_code_len: 1,
+            bold,
+            italic,
         };
     };
 
     let mut decoder = parse_to_unicode_cmap(&lossy(&cmap_stream));
     decoder.encoding = encoding;
     decoder.widths = widths;
+    decoder.bold = bold;
+    decoder.italic = italic;
     decoder
+}
+
+/// Detect bold/italic for a font from its `/BaseFont` name (after stripping the
+/// subset prefix) and, when present, its `/FontDescriptor` `/Flags` (bit 7
+/// Italic, bit 19 ForceBold) and `/ItalicAngle`.
+fn font_style(font_body: &str, object_map: &HashMap<u32, PdfObject>) -> (bool, bool) {
+    let mut bold = false;
+    let mut italic = false;
+    if let Some(name) = parse_name_after(font_body, "/BaseFont") {
+        let bare = name.rsplit('+').next().unwrap_or(name.as_str()).to_ascii_lowercase();
+        bold |= ["bold", "black", "heavy", "semibold", "demibold", "-bd", "demi"]
+            .iter()
+            .any(|needle| bare.contains(needle));
+        italic |= ["italic", "oblique", "-it"]
+            .iter()
+            .any(|needle| bare.contains(needle));
+    }
+    if let Some(descriptor_ref) = parse_direct_ref_after_key(font_body, "/FontDescriptor") {
+        if let Some(object) = object_map.get(&(descriptor_ref as u32)) {
+            let body = lossy(&object.body);
+            if let Some(flags) = parse_number_after(&body, "/Flags") {
+                let flags = flags as i64;
+                italic |= flags & 64 != 0;
+                bold |= flags & 262_144 != 0;
+            }
+            if let Some(angle) = parse_number_after(&body, "/ItalicAngle") {
+                italic |= angle.abs() > f32::EPSILON;
+            }
+        }
+    }
+    (bold, italic)
+}
+
+/// Parse a PDF name value (`/Name`) following `key`.
+fn parse_name_after(text: &str, key: &str) -> Option<String> {
+    let start = text.find(key)? + key.len();
+    let rest = text[start..].trim_start();
+    let mut chars = rest.chars();
+    if chars.next()? != '/' {
+        return None;
+    }
+    let name: String = chars
+        .take_while(|character| {
+            !character.is_whitespace()
+                && !matches!(character, '/' | '[' | ']' | '<' | '>' | '(' | ')')
+        })
+        .collect();
+    (!name.is_empty()).then_some(name)
 }
 
 fn font_widths(font_body: &str, encoding: &HashMap<u8, String>) -> HashMap<char, f32> {
@@ -3714,6 +3787,8 @@ fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
         encoding: HashMap::new(),
         widths: HashMap::new(),
         max_code_len,
+        bold: false,
+        italic: false,
     }
 }
 
@@ -4356,6 +4431,8 @@ mod tests {
             },
             font: None,
             size,
+            bold: false,
+            italic: false,
             source_object_ids: Vec::new(),
         }
     }

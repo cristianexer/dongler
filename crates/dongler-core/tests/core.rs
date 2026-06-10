@@ -513,6 +513,36 @@ fn load_path_expands_pdf_unicode_ligatures() {
 }
 
 #[test]
+fn load_path_detects_bold_and_italic_pdf_fonts() {
+    let path = write_temp_bytes("bold-italic.pdf", bold_italic_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(
+        markdown.contains("**Important warning**"),
+        "expected bold markdown: {markdown}"
+    );
+    assert!(
+        markdown.contains("*Subtle aside note*"),
+        "expected italic markdown: {markdown}"
+    );
+
+    let mut saw_bold = false;
+    let mut saw_italic = false;
+    for block in &document.pages[0].blocks {
+        if let Block::Text(text) = block {
+            for span in text.lines.iter().flat_map(|line| line.spans.iter()) {
+                saw_bold |= span.bold;
+                saw_italic |= span.italic;
+            }
+        }
+    }
+    assert!(saw_bold, "expected a bold span");
+    assert!(saw_italic, "expected an italic span");
+}
+
+#[test]
 fn load_path_decodes_ascii85_flate_pdf_streams() {
     let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
 
@@ -2606,6 +2636,18 @@ end";
         content_stream,
         cmap.len(),
         cmap
+    )
+    .into_bytes();
+    pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+fn bold_italic_pdf() -> Vec<u8> {
+    let content_stream = "BT /F1 12 Tf 72 720 Td (Important warning) Tj /F2 12 Tf 0 -20 Td (Subtle aside note) Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>\nendobj\n",
+        content_stream.len(),
+        content_stream
     )
     .into_bytes();
     pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");

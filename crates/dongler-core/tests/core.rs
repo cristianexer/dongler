@@ -285,7 +285,7 @@ fn load_path_extracts_markdown_headings_and_tables() {
     assert!(latex.contains("\\subsection{Details}"));
     assert!(latex.contains("\\begin{itemize}"));
     assert!(latex.contains("\\item first"));
-    assert!(latex.contains("\\begin{tabular}{ll}"));
+    assert!(latex.contains("\\begin{tabular}{lr}"));
     match &document.pages[0].blocks[0] {
         Block::Text(block) => {
             assert_eq!(block.kind, "heading_1");
@@ -362,7 +362,7 @@ Alpha & 42 \\
     assert!(latex.contains("100\\% of effort"));
     assert!(latex.contains("\\begin{itemize}"));
     assert!(latex.contains("\\item second result"));
-    assert!(latex.contains("\\begin{tabular}{ll}"));
+    assert!(latex.contains("\\begin{tabular}{lr}"));
 
     match &document.pages[0].blocks[0] {
         Block::Text(block) => {

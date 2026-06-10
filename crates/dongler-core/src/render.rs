@@ -42,7 +42,9 @@ pub struct LatexRenderer;
 
 impl Renderer for LatexRenderer {
     fn render(&self, document: &Document) -> Result<String> {
-        let mut output = String::from("\\documentclass{article}\n\\begin{document}\n\n");
+        let mut output = String::from(
+            "\\documentclass{article}\n\\usepackage{longtable}\n\\begin{document}\n\n",
+        );
 
         for page in &document.pages {
             for block in &page.blocks {
@@ -251,7 +253,16 @@ fn render_latex_table(table: &TableBlock) -> String {
         return String::new();
     }
 
-    let mut output = format!("\\begin{{tabular}}{{{}}}\n", "l".repeat(width));
+    let spec = latex_column_spec(table, width);
+    // A long statement (e.g. a full cash-flow) overruns a single `tabular` page;
+    // `longtable` breaks across pages so the whole table is actually readable.
+    let environment = if table.rows.len() > 24 {
+        "longtable"
+    } else {
+        "tabular"
+    };
+
+    let mut output = format!("\\begin{{{environment}}}{{{spec}}}\n");
     if !table.headers.is_empty() {
         output.push_str(&latex_row(&normalize_row(&table.headers, width)));
         output.push_str("\\hline\n");
@@ -261,8 +272,50 @@ fn render_latex_table(table: &TableBlock) -> String {
         output.push_str(&latex_row(&normalize_row(row, width)));
     }
 
-    output.push_str("\\end{tabular}");
+    output.push_str(&format!("\\end{{{environment}}}"));
     output
+}
+
+/// LaTeX column spec: a column is right-aligned (`r`) when its body cells are
+/// mostly figures (so a financial statement's number columns line up the way the
+/// source does); everything else is left-aligned (`l`).
+fn latex_column_spec(table: &TableBlock, width: usize) -> String {
+    (0..width)
+        .map(|column| {
+            let (mut total, mut numeric) = (0usize, 0usize);
+            for row in &table.rows {
+                if let Some(cell) = row.get(column) {
+                    let cell = cell.trim();
+                    if cell.is_empty() {
+                        continue;
+                    }
+                    total += 1;
+                    if cell_is_numeric(cell) {
+                        numeric += 1;
+                    }
+                }
+            }
+            if total > 0 && numeric * 2 >= total {
+                'r'
+            } else {
+                'l'
+            }
+        })
+        .collect()
+}
+
+/// A cell that reads as a figure — digits possibly wrapped in `$`, parentheses,
+/// commas, a percent, a decimal point, or a dash placeholder.
+fn cell_is_numeric(text: &str) -> bool {
+    let mut digits = 0usize;
+    for character in text.chars() {
+        match character {
+            '0'..='9' => digits += 1,
+            '$' | '(' | ')' | ',' | '.' | '%' | '-' | '+' | ' ' | '\u{2014}' | '\u{2013}' => {}
+            _ => return false,
+        }
+    }
+    digits >= 1
 }
 
 fn render_latex_figure(figure: &FigureBlock) -> String {

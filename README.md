@@ -1,38 +1,57 @@
 <p align="center">
-  <img src="https://cristianexer.github.io/dongler/img/dongler-logo.png" alt="Dongler logo" width="132">
+  <a href="https://cristianexer.github.io/dongler/"><img src="website/static/img/dongler-banner.svg" alt="Dongler — fast, Rust-native document extraction to Markdown, LaTeX, and JSON" width="100%"></a>
 </p>
 
-# Dongler
+<h1 align="center">Dongler</h1>
 
 <p align="center">
-  <a href="https://pypi.org/project/dongler/"><img alt="PyPI package" src="https://img.shields.io/pypi/v/dongler?style=for-the-badge&logo=python&logoColor=white&label=PyPI&color=3776AB"></a>
-  <a href="https://crates.io/crates/dongler"><img alt="crates.io package" src="https://img.shields.io/crates/v/dongler?style=for-the-badge&logo=rust&logoColor=white&label=crates.io&color=8B4513"></a>
-  <a href="https://www.npmjs.com/package/@cristianexer/dongler"><img alt="npm package" src="https://img.shields.io/npm/v/@cristianexer/dongler?style=for-the-badge&logo=npm&logoColor=white&label=npm&color=CB3837"></a>
+  <b>Turn PDFs and documents into clean Markdown, LaTeX, or structured JSON.</b><br>
+  Rust-native, runs locally, no hosted service · API key · LLM · or OCR for digitally born PDFs.
 </p>
 
-Dongler is a fast, Rust-native PDF extraction package for developers who need
-clean Markdown, LaTeX, or structured JSON without wiring together a stack of
-document tools.
+<p align="center">
+  <a href="https://pypi.org/project/dongler/"><img alt="PyPI" src="https://img.shields.io/pypi/v/dongler?style=for-the-badge&logo=python&logoColor=white&label=PyPI&color=3776AB"></a>
+  <a href="https://crates.io/crates/dongler"><img alt="crates.io" src="https://img.shields.io/crates/v/dongler?style=for-the-badge&logo=rust&logoColor=white&label=crates.io&color=8B4513"></a>
+  <a href="https://www.npmjs.com/package/@cristianexer/dongler"><img alt="npm" src="https://img.shields.io/npm/v/@cristianexer/dongler?style=for-the-badge&logo=npm&logoColor=white&label=npm&color=CB3837"></a>
+</p>
 
-It is designed around the practical path-first workflow: load a file, inspect
-the document object when needed, then render the output format your pipeline
-needs. The same core engine powers the CLI, Python package, TypeScript package,
-and Rust API.
+<p align="center">
+  <a href="https://github.com/cristianexer/dongler/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cristianexer/dongler?style=flat-square&logo=github&label=release&color=17b9c8"></a>
+  <a href="https://github.com/cristianexer/dongler/actions/workflows/workflow.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/cristianexer/dongler/workflow.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=build"></a>
+  <a href="https://github.com/cristianexer/dongler/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-0aa?style=flat-square"></a>
+  <a href="https://cristianexer.github.io/dongler/"><img alt="Docs" src="https://img.shields.io/badge/docs-online-5ef0e6?style=flat-square&logo=readthedocs&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://cristianexer.github.io/dongler/docs/intro"><b>Documentation</b></a>&nbsp; ·&nbsp;
+  <a href="https://cristianexer.github.io/dongler/docs/quickstart">Quick start</a>&nbsp; ·&nbsp;
+  <a href="https://cristianexer.github.io/dongler/docs/api">API reference</a>&nbsp; ·&nbsp;
+  <a href="https://cristianexer.github.io/dongler/llms.txt">LLM context</a>
+</p>
+
+---
+
+Dongler is built around a **path-first workflow**: load a file, inspect the document object when
+you need to, then render the output format your pipeline wants. One Rust core powers the **CLI,
+Python, TypeScript, and Rust** APIs, so the extraction model is identical everywhere.
 
 ## Install
 
 ```bash
-cargo install dongler
-pip install dongler
-npm install @cristianexer/dongler
+cargo install dongler                  # CLI + Rust
+pip install dongler                    # Python
+npm install @cristianexer/dongler      # Node / TypeScript
 ```
 
-For Rust library usage, depend on `dongler-core`. The public `dongler` crate is
-the CLI package.
+For the Rust library, depend on `dongler-core`. The public `dongler` crate is the CLI package.
 
 ## Parse a PDF
 
-Python:
+<table>
+<tr>
+<td valign="top">
+
+**Python**
 
 ```python
 import dongler
@@ -43,7 +62,10 @@ latex = doc.to_latex()
 data = doc.to_dict()
 ```
 
-TypeScript:
+</td>
+<td valign="top">
+
+**TypeScript**
 
 ```ts
 import { load } from "@cristianexer/dongler";
@@ -54,67 +76,73 @@ const latex = doc.toLatex();
 const data = doc.toObject();
 ```
 
-Rust:
+</td>
+<td valign="top">
+
+**Rust**
 
 ```rust
 use dongler_core::load_path;
 
-fn main() -> dongler_core::Result<()> {
-    let doc = load_path("report.pdf")?;
-    println!("{}", doc.to_markdown()?);
-    Ok(())
-}
+let doc = load_path("report.pdf")?;
+println!("{}", doc.to_markdown()?);
 ```
 
-## What You Get
+</td>
+</tr>
+</table>
 
-- Markdown, LaTeX, and JSON renderers from the same document object.
-- Page, block, table, image, warning, and metadata fields for downstream code.
-- Rust-native PDF extraction with no hosted service, API key, LLM, or OCR
-  dependency for digitally born PDFs.
-- Python, TypeScript, Rust, and CLI entrypoints over the same core.
-- Batch APIs that return one result per file, so one unsupported document does
-  not stop a job.
+## What you get
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**📄 Markdown · LaTeX · JSON**
+<br>Three renderers from one document object — headings, tables, lists, figures, and emphasis.
+
+**⚡ Native speed, local runtime**
+<br>A custom Rust PDF parser with `rayon` page-parallelism. No hosted service, API key, LLM, or OCR for born-digital PDFs.
+
+**🧱 Structured document model**
+<br>Page, block, table, image, span, warning, and metadata fields — with source anchors back to PDF objects.
+
+</td>
+<td width="50%" valign="top">
+
+**🧩 One API across stacks**
+<br>The same extraction model in Python, Node.js, Rust, and the CLI.
+
+**📦 Pipeline-friendly batches**
+<br>Batch APIs return one result per file — a single bad document never stops the job.
+
+**🔌 Beyond PDF**
+<br>Native extraction for DOCX/XLSX/PPTX, ODT/ODS/ODP, HTML/XML, EML, JSON/JSONL, CSV/TSV, images, and archives.
+
+</td>
+</tr>
+</table>
 
 ## Why Dongler
 
-Use Dongler when the job starts with a document path and the next step needs
-useful text quickly:
+Use Dongler when the job starts with a document path and the next step needs useful text quickly:
 
 - Convert PDFs to Markdown for indexing, review, or RAG ingestion.
 - Keep page/block/table/image metadata available through JSON.
 - Run locally in scripts, services, queues, notebooks, and shell workflows.
 - Use the same extraction model across Python, Node.js, Rust, and the CLI.
 
-## Supported Inputs
+## Supported inputs
 
-Dongler focuses on digitally born PDFs and also supports native extraction for
-DOCX, XLSX, PPTX, ODT/ODS/ODP,
-HTML/XML, EML, JSON/JSONL, CSV/TSV, image metadata including TIFF, and plain
-text/Markdown/TeX today. It also supports gzip-compressed text/JSON/XML/CSV
-corpus files, bare gzip source files, and zip/tar/tar.gz source packages.
+Dongler focuses on digitally born PDFs and also supports native extraction for DOCX, XLSX, PPTX,
+ODT/ODS/ODP, HTML/XML, EML, JSON/JSONL, CSV/TSV, image metadata including TIFF, and plain
+text/Markdown/TeX. It also reads gzip-compressed text/JSON/XML/CSV corpus files, bare gzip source
+files, and zip/tar/tar.gz source packages. Legacy binary Office and Outlook containers are detected
+and return explicit planned-format errors until their engines land.
 
-Legacy binary Office and Outlook containers are detected and return explicit
-planned-format errors until their engines land.
+## Batch processing
 
-## More Examples
-
-Plain text, Markdown, office files, and data files use the same API:
-
-```python
-import dongler
-
-doc = dongler.load("invoice.docx")
-markdown = doc.to_markdown()
-latex = doc.to_latex()
-```
-
-## Batch Processing
-
-Batch processing returns one result per file. One bad or unsupported document
-does not stop the batch.
-
-Python:
+One result per file — a bad or unsupported document does not stop the batch.
 
 ```python
 import dongler
@@ -126,55 +154,20 @@ for result in dongler.load_many(["notes.txt", "invoice.pdf"]):
         print(f"{result['path']}: {result['error']}")
 ```
 
-TypeScript:
-
-```ts
-import { loadMany } from "@cristianexer/dongler";
-
-for (const result of loadMany(["notes.txt", "invoice.pdf"])) {
-  if (result.ok) {
-    console.log(result.document!.toMarkdown());
-  } else {
-    console.error(`${result.path}: ${result.error}`);
-  }
-}
-```
-
-Rust:
-
-```rust
-use dongler_core::load_many;
-
-for result in load_many(["notes.txt", "invoice.pdf"]) {
-    if result.ok {
-        println!("{}", result.document.unwrap().to_markdown().unwrap());
-    } else {
-        eprintln!("{}: {}", result.path, result.error.unwrap());
-    }
-}
-```
-
 ## CLI
 
 ```bash
 dongler --version
-dongler inspect notes.txt
 dongler inspect invoice.pdf
 dongler extract report.docx --format markdown
-dongler extract book.xlsx --format json
-dongler extract deck.pptx --format markdown
-dongler extract notes.odt --format markdown
-dongler extract annotations.json --format markdown
-dongler extract boxes.csv --format json
-dongler extract notes.txt --format markdown
-dongler extract notes.txt --format latex
-dongler extract notes.txt --format json
+dongler extract book.xlsx   --format json
+dongler extract notes.txt   --format latex
 ```
 
-PDF extraction through the CLI uses the same Rust-native engine as the Rust,
-Python, and TypeScript packages.
+PDF extraction through the CLI uses the same Rust-native engine as the Rust, Python, and TypeScript
+packages.
 
-## Developer Docs
+## Documentation
 
 - [Documentation](https://cristianexer.github.io/dongler/docs/intro)
 - [Quick start](https://cristianexer.github.io/dongler/docs/quickstart)
@@ -211,5 +204,5 @@ Coverage is `parse / bbox / anchors`. Ground-truth accuracy is token-F1, olmOCR 
 
 ## License
 
-Dongler is MIT licensed. Copyright (c) 2026 Daniel Fat. See `LICENSE` and
-`NOTICE` for the full notice text.
+Dongler is MIT licensed. Copyright (c) 2026 Daniel Fat. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)
+for the full notice text.

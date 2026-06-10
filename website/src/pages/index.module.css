@@ -44,11 +44,11 @@
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--dg-accent);
+  color: var(--dg-muted);
   padding: 0.32rem 0.7rem;
-  border: 1px solid var(--dg-border-strong);
+  border: 1px solid var(--dg-border);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--dg-accent) 8%, transparent);
+  background: var(--dg-accent);
   margin: 0 0 1.4rem;
 }
 .brandWord::before {
@@ -56,8 +56,8 @@
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: var(--dg-accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--dg-accent) 25%, transparent);
+  background: var(--dg-fg);
+  box-shadow: 0 0 0 4px hsl(var(--foreground) / 0.12);
 }
 
 .heroTitle {
@@ -69,7 +69,11 @@
   margin: 0 0 1.25rem;
 }
 .heroTitle span {
-  background: linear-gradient(120deg, var(--ifm-color-primary), #5ef0e6);
+  background: linear-gradient(
+    120deg,
+    hsl(var(--foreground)),
+    hsl(var(--muted-foreground))
+  );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -107,7 +111,7 @@
 }
 .commandRow code::before {
   content: "$ ";
-  color: var(--dg-accent);
+  color: var(--dg-muted);
 }
 
 /* ---------- preview panel (always dark, glassy) ---------- */
@@ -143,7 +147,7 @@
   background: rgba(255, 255, 255, 0.02);
 }
 .panelBar strong {
-  color: #5ef0e6;
+  color: #e8edf2;
   font-weight: 600;
 }
 .panelTabs {
@@ -160,8 +164,8 @@
 }
 .activeTab {
   color: #e7f3f6 !important;
-  background: rgba(47, 224, 210, 0.1);
-  border-bottom: 2px solid var(--dg-accent);
+  background: rgba(255, 255, 255, 0.08);
+  border-bottom: 2px solid #e8edf2;
 }
 .panelBody {
   display: grid;
@@ -194,7 +198,7 @@
 .documentPreview h3 {
   font-size: 0.85rem;
   margin: 0.6rem 0 0.4rem;
-  color: var(--dg-accent);
+  color: #e8edf2;
 }
 .documentPreview p {
   margin: 0 0 0.7rem;
@@ -209,7 +213,7 @@
 }
 .documentPreview th {
   text-align: left;
-  color: #5ef0e6;
+  color: #c6d3df;
   font-weight: 600;
   padding: 0.28rem 0.4rem;
   border-bottom: 1px solid rgba(120, 180, 200, 0.18);
@@ -263,8 +267,9 @@
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--dg-accent) 12%, transparent);
-  color: var(--dg-accent);
+  background: var(--dg-accent);
+  border: 1px solid var(--dg-border);
+  color: var(--dg-fg);
   font-size: 1.05rem;
 }
 .packageLink strong {
@@ -320,8 +325,9 @@
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--dg-accent) 12%, transparent);
-  color: var(--dg-accent);
+  background: var(--dg-accent);
+  border: 1px solid var(--dg-border);
+  color: var(--dg-fg);
   font-size: 1.15rem;
   margin-bottom: 1.05rem;
 }

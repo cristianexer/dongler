@@ -1,8 +1,29 @@
+const fs = require("fs");
+const path = require("path");
+
 const lightCodeTheme = require("prism-react-renderer").themes.oneLight;
 const darkCodeTheme = require("prism-react-renderer").themes.oneDark;
 
+// Couple the documented version to the released crate so the sidebar badge and
+// metadata always track the latest publish without hardcoding it anywhere.
+function readDonglerVersion() {
+  try {
+    const cargo = fs.readFileSync(
+      path.join(__dirname, "..", "crates", "dongler-core", "Cargo.toml"),
+      "utf8",
+    );
+    const match = cargo.match(/^version\s*=\s*"([^"]+)"/m);
+    return match ? match[1] : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+const donglerVersion = readDonglerVersion();
+
 /** @type {import('@docusaurus/types').Config} */
 const config = {
+  customFields: { donglerVersion },
   title: "Dongler",
   tagline: "Fast PDF parsing to Markdown, LaTeX, and JSON",
   favicon: "img/dongler-logo.png",
@@ -13,6 +34,25 @@ const config = {
   projectName: "dongler",
   trailingSlash: false,
   headTags: [
+    {
+      tagName: "link",
+      attributes: { rel: "preconnect", href: "https://fonts.googleapis.com" },
+    },
+    {
+      tagName: "link",
+      attributes: {
+        rel: "preconnect",
+        href: "https://fonts.gstatic.com",
+        crossorigin: "anonymous",
+      },
+    },
+    {
+      tagName: "link",
+      attributes: {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap",
+      },
+    },
     {
       tagName: "meta",
       attributes: {
@@ -83,8 +123,8 @@ const config = {
   themeConfig: {
     image: "img/dongler-social-card.svg",
     colorMode: {
-      defaultMode: "dark",
-      respectPrefersColorScheme: false,
+      defaultMode: "light",
+      respectPrefersColorScheme: true,
     },
     navbar: {
       title: "Dongler",
@@ -93,6 +133,15 @@ const config = {
         src: "img/dongler-mark.svg",
       },
       items: [
+        ...(donglerVersion
+          ? [
+              {
+                type: "html",
+                position: "left",
+                value: `<span class="navbar__version">v${donglerVersion}</span>`,
+              },
+            ]
+          : []),
         { to: "/docs/intro", label: "Docs", position: "left" },
         { to: "/docs/quickstart", label: "Quick start", position: "left" },
         { to: "/docs/api", label: "API", position: "left" },

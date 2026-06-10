@@ -803,7 +803,8 @@ fn default_glyph_width(character: char) -> f32 {
         | '|' | '\'' => 250.0,
         '"' | '(' | ')' | '*' | '`' | '-' | 'f' | 'r' | 't' | '{' | '}' => 333.0,
         'm' | 'M' | 'W' | 'w' | '@' => 850.0,
-        'A'..='Z' | '0'..='9' | '$' | '+' | '<' | '=' | '>' | '?' | '_' | '~' => 600.0,
+        '0'..='9' => 556.0,
+        'A'..='Z' | '$' | '+' | '<' | '=' | '>' | '?' | '_' | '~' => 650.0,
         _ => 500.0,
     }
 }
@@ -1484,7 +1485,17 @@ fn join_runs_spaced(runs: &[TextRun]) -> String {
             // flattened); keep those tokens apart even when they abut horizontally.
             let baseline_break =
                 (prev_baseline_y - run.baseline_y).abs() >= run.size.max(1.0) * 0.18;
-            if !out.is_empty() && !boundary_has_space && (gap >= threshold || baseline_break) {
+            // Two complete tokens that appear to *overlap* by more than half a space
+            // width are separate words whose advance was over-estimated (common with
+            // fallback metrics), not a continuation — a real word never overlaps the
+            // next. A near-zero gap stays joined, so a ligature fragment that abuts
+            // ("fi" + "scal") is unaffected.
+            let overlap_break =
+                tokens_separate && gap <= -(prev_space_width.max(run.space_width) * 0.6).max(0.5);
+            if !out.is_empty()
+                && !boundary_has_space
+                && (gap >= threshold || baseline_break || overlap_break)
+            {
                 out.push(' ');
             }
         }
@@ -2652,10 +2663,30 @@ fn detect_implied_alignment_table(page_number: usize, lines: &[TextLine]) -> Opt
         })
         .collect::<Vec<_>>();
     let group = best_aligned_table_row_group(&row_candidates)?;
-    if !has_nearby_table_label(lines, &group) {
+    // A nearby "Table N" caption confirms an implied table, but most real tables
+    // (financial statements, schedules) have no such caption. Accept those when the
+    // aligned group is strong enough on its own — many rows of consistently aligned
+    // numeric columns — mirroring the ruled-grid detector's multi-row evidence path.
+    if !has_nearby_table_label(lines, &group) && !has_strong_numeric_table_evidence(&group) {
         return None;
     }
     build_implied_alignment_table(page_number, lines, &group)
+}
+
+/// Whether an aligned row group is, by itself, strong evidence of a table: at
+/// least four rows of three or more columns where most rows carry numeric values
+/// in their non-label cells. Deliberately conservative so prose with incidental
+/// numbers is not promoted to a table.
+fn has_strong_numeric_table_evidence(rows: &[TableRowCandidate]) -> bool {
+    let columns = rows.first().map_or(0, |row| row.cells.len());
+    if rows.len() < 4 || columns < 3 {
+        return false;
+    }
+    let numeric_rows = rows
+        .iter()
+        .filter(|row| row_has_numeric_table_evidence(&row.cells))
+        .count();
+    numeric_rows * 4 >= rows.len() * 3
 }
 
 fn has_nearby_table_label(lines: &[TextLine], rows: &[TableRowCandidate]) -> bool {
@@ -2728,13 +2759,7 @@ fn implied_cell_gap_threshold(line: &TextLine) -> f32 {
 
 fn text_run_from_cell_runs(runs: &[TextRun]) -> Option<TextRun> {
     let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
-    let text = runs
-        .iter()
-        .map(|run| run.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let text = clean_pdf_line_text(&text);
+    let text = clean_pdf_line_text(&join_runs_spaced(runs));
     if text.is_empty() {
         return None;
     }
@@ -2817,7 +2842,17 @@ fn table_rows_align(first: &TableRowCandidate, next: &TableRowCandidate) -> bool
             .cells
             .iter()
             .zip(&next.cells)
-            .all(|(left, right)| (left.bbox.x - right.bbox.x).abs() <= 14.0)
+            .all(|(left, right)| cells_column_aligned(left, right))
+}
+
+/// Two cells share a column when their left edges line up (left-aligned text) or
+/// their right edges line up (right-aligned numeric columns — the norm in
+/// financial statements, where the left edge slides with the number's width).
+fn cells_column_aligned(left: &TextRun, right: &TextRun) -> bool {
+    let left_edge = (left.bbox.x - right.bbox.x).abs() <= 14.0;
+    let right_edge =
+        ((left.bbox.x + left.bbox.width) - (right.bbox.x + right.bbox.width)).abs() <= 14.0;
+    left_edge || right_edge
 }
 
 fn table_row_vertical_gap(previous: &TableRowCandidate, next: &TableRowCandidate) -> f32 {
@@ -2983,7 +3018,7 @@ fn implied_table_header(
     let column_refs = first_row
         .cells
         .iter()
-        .map(|cell| cell.bbox.x)
+        .map(|cell| (cell.bbox.x, cell.bbox.x + cell.bbox.width))
         .collect::<Vec<_>>();
 
     let mut candidates = lines
@@ -2998,6 +3033,10 @@ fn implied_table_header(
                 && !text_line_plain_text(line)
                     .to_ascii_lowercase()
                     .starts_with("table ")
+                // Skip lines that are themselves full data rows (a labelled row of
+                // numeric columns, e.g. a "$"-prefixed opening balance): those
+                // belong in the body, not merged into the column header.
+                && !line_is_data_row(line, columns)
         })
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| right.1.bbox.y.total_cmp(&left.1.bbox.y));
@@ -3022,13 +3061,30 @@ fn implied_table_header(
     header
 }
 
-fn nearest_table_column(cell: &TextRun, column_refs: &[f32]) -> Option<usize> {
+/// A line that looks like a full body row — at least as many cells as the table
+/// has columns, with numeric values in the non-label cells. Used to keep opening
+/// balances and similar `$`-prefixed rows out of the inferred header.
+fn line_is_data_row(line: &TextLine, columns: usize) -> bool {
+    let cells = implied_table_cells(line);
+    cells.len() >= columns && row_has_numeric_table_evidence(&cells)
+}
+
+/// Assign a header fragment to the column whose horizontal span it overlaps (or is
+/// nearest in center). Center matching, rather than left-edge matching, is what
+/// lets a left-aligned header word line up with a right-aligned numeric column.
+fn nearest_table_column(cell: &TextRun, column_refs: &[(f32, f32)]) -> Option<usize> {
+    let cell_center = cell.bbox.x + cell.bbox.width / 2.0;
     let (column, distance) = column_refs
         .iter()
         .enumerate()
-        .map(|(index, x)| (index, (cell.bbox.x - *x).abs()))
+        .map(|(index, (left, right))| {
+            let column_center = (left + right) / 2.0;
+            (index, (cell_center - column_center).abs())
+        })
         .min_by(|left, right| left.1.total_cmp(&right.1))?;
-    (distance <= 24.0).then_some(column)
+    let (left, right) = column_refs[column];
+    let tolerance = ((right - left) / 2.0 + 18.0).max(24.0);
+    (distance <= tolerance).then_some(column)
 }
 
 fn append_header_cell(target: &mut Option<TextRun>, fragment: TextRun) {

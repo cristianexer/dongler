@@ -95,12 +95,38 @@ def download_url(dataset: dict[str, Any], target: Path) -> None:
             marker.write_text("ok\n")
 
 
-def download_dataset(dataset: dict[str, Any], data_root: Path, repo_root: Path, budget_bytes: int) -> dict[str, Any]:
+def download_dataset(
+    dataset: dict[str, Any],
+    data_root: Path,
+    repo_root: Path,
+    budget_bytes: int,
+    allowed_license_classes: set[str] | None = None,
+) -> dict[str, Any]:
     target = data_root / dataset.get("local_dir", dataset["slug"])
     spec = dataset["download"]
     before = directory_size(target)
     status = "skipped"
     error = None
+    license_class = dataset.get("license_class")
+
+    if (
+        allowed_license_classes is not None
+        and license_class is not None
+        and license_class not in allowed_license_classes
+    ):
+        return {
+            "dataset": dataset["name"],
+            "slug": dataset["slug"],
+            "status": "blocked_by_license",
+            "bytes_before": before,
+            "bytes_after": before,
+            "error": (
+                f"license_class '{license_class}' not in --allow "
+                f"({', '.join(sorted(allowed_license_classes))})"
+            ),
+            "local_dir": str(target),
+            "license_class": license_class,
+        }
 
     try:
         if spec["kind"] == "git":
@@ -146,6 +172,7 @@ def download_dataset(dataset: dict[str, Any], data_root: Path, repo_root: Path, 
         "bytes_after": after,
         "error": error,
         "local_dir": str(target),
+        "license_class": license_class,
     }
 
 
@@ -156,7 +183,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", default=os.environ.get("DONGLER_EVAL_DATA_DIR", "eval/data"))
     parser.add_argument("--budget-gb", type=float, default=float(os.environ.get("DONGLER_DATA_BUDGET_GB", "100")))
     parser.add_argument("--strict", action="store_true", help="Exit nonzero if any selected dataset fails.")
+    parser.add_argument(
+        "--allow",
+        default=None,
+        help=(
+            "Comma-separated license classes permitted for automatic download "
+            "(permissive, eval_only, unverified, or 'all'). "
+            "Default: the manifest's default_allow, else 'permissive'. "
+            "Datasets without a license_class are always allowed."
+        ),
+    )
     return parser.parse_args()
+
+
+def resolve_allowed_license_classes(
+    raw: str | None, manifest: dict[str, Any]
+) -> set[str] | None:
+    """Return the set of permitted license classes, or None to allow all."""
+    if raw is None:
+        raw = ",".join(manifest.get("default_allow", ["permissive"]))
+    if raw.strip().lower() == "all":
+        return None
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 def main() -> int:
@@ -187,8 +235,9 @@ def main() -> int:
     if unknown_slugs:
         print(f"unknown dataset slug(s): {', '.join(sorted(unknown_slugs))}", file=sys.stderr)
         return 2
+    allowed_license_classes = resolve_allowed_license_classes(args.allow, manifest)
     results = [
-        download_dataset(dataset, data_root, repo_root, budget_bytes)
+        download_dataset(dataset, data_root, repo_root, budget_bytes, allowed_license_classes)
         for dataset in datasets
     ]
     out_dir = repo_root / "eval" / "out" / "benchmarks"

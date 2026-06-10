@@ -1,0 +1,320 @@
+{
+  "name": "document-benchmarks-v2",
+  "created_at": "2026-06-10",
+  "storage_root": "eval/data",
+  "default_disk_budget_gb": 100,
+  "default_max_pdfs_per_dataset": null,
+  "license_classes": {
+    "permissive": "Open license with no commercial restriction (MIT, Apache-2.0, CDLA-Permissive, CC-BY, ODC-BY). Attribution may be required.",
+    "eval_only": "Research/evaluation use only or non-commercial (CC BY-NC-*, dataset terms restrict commercial use). Do not redistribute extracted derivatives commercially.",
+    "unverified": "License not confirmed on the source page; review terms before downloading or redistributing."
+  },
+  "default_allow": ["permissive"],
+  "notes": "Verified 2026-06-10. license_class gates automatic download in scripts/download-benchmark-data.py (default --allow permissive). Metric names align with scripts/eval_metrics/. Several large corpora are kind=disabled with the verified id recorded in source/notes for manual opt-in.",
+  "datasets": [
+    {
+      "name": "OmniDocBench",
+      "slug": "omnidocbench",
+      "task": "end-to-end PDF parsing (markdown, layout, table, formula, reading order)",
+      "source": "https://huggingface.co/datasets/opendatalab/OmniDocBench",
+      "local_dir": "omnidocbench",
+      "modality": "PDFs plus rich JSON parsing annotations",
+      "license": "research-only (data); Apache-2.0 (code)",
+      "license_class": "eval_only",
+      "download": {
+        "kind": "hf",
+        "repo": "opendatalab/OmniDocBench",
+        "include": ["OmniDocBench.json", "ori_pdfs/**"],
+        "max_bytes": 5368709120
+      },
+      "metrics": ["parse_success_rate", "edit_similarity", "bleu", "teds", "mean_average_precision", "reading_order_ard"],
+      "notes": "1,651 pages / ~1.55 GB. Richest single source: markdown + 28 block & 4 span bboxes + reading order + table HTML/LaTeX + formula LaTeX. Official metrics: normalized edit distance, BLEU/METEOR, TEDS, CDM, COCO mAP."
+    },
+    {
+      "name": "olmOCR-Bench",
+      "slug": "olmocr-bench",
+      "task": "unit-style OCR/PDF parsing checks",
+      "source": "https://huggingface.co/datasets/allenai/olmOCR-bench",
+      "local_dir": "olmocr-bench",
+      "modality": "PDFs plus pass/fail JSONL assertions",
+      "license": "ODC-BY-1.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "hf",
+        "repo": "allenai/olmOCR-bench",
+        "include": ["*.yaml", "bench_data/*.jsonl", "**/*.pdf"],
+        "max_bytes": 21474836480
+      },
+      "metrics": ["parse_success_rate", "anchored_block_rate", "pages_per_second", "olmocr_unit_pass_rate"],
+      "notes": "1,403 PDFs / 7,010 assertions across arXiv math, tables, multi-column reading order, headers/footers, old scans. Deterministic CI fit."
+    },
+    {
+      "name": "READoc",
+      "slug": "readoc",
+      "task": "PDF-to-Markdown structured extraction",
+      "source": "https://huggingface.co/datasets/lazyc/READoc",
+      "local_dir": "readoc",
+      "modality": "structured Markdown ground truth",
+      "license": "MIT",
+      "license_class": "permissive",
+      "download": {
+        "kind": "hf",
+        "repo": "lazyc/READoc",
+        "include": ["github_ground_truth/*.md", "arxiv_ground_truth/*.md"],
+        "max_bytes": 4294967296
+      },
+      "metrics": ["parse_success_rate", "anchored_block_rate", "edit_similarity", "bleu"],
+      "notes": "3,576 rows / 3.28 GB from 2,233 arXiv + GitHub docs. Markdown GT; evaluation suite uses normalized edit distance plus structure scoring."
+    },
+    {
+      "name": "ReadingBank",
+      "slug": "readingbank",
+      "task": "reading-order ground truth",
+      "source": "https://huggingface.co/datasets/zilongwang/ReadingBank",
+      "local_dir": "readingbank",
+      "modality": "word sequence plus coordinates in reading order",
+      "license": "unverified",
+      "license_class": "unverified",
+      "download": {
+        "kind": "disabled",
+        "reason": "full 500k-page set is gated (request access); ~100 sample pages are open. HF: zilongwang/ReadingBank (also GH doc-analysis/ReadingBank)."
+      },
+      "metrics": ["reading_order_ard", "sequence_bleu", "normalized_kendall_tau"],
+      "notes": "Reading-order-specific (LayoutReader, EMNLP 2021). Metrics: page-level BLEU + Average Relative Distance."
+    },
+    {
+      "name": "PubTables-1M",
+      "slug": "pubtables-1m",
+      "task": "table detection and structure",
+      "source": "https://huggingface.co/datasets/bsmock/pubtables-1m",
+      "local_dir": "pubtables-1m",
+      "modality": "PDF pages, PASCAL-VOC bbox, table structure, word boxes",
+      "license": "CDLA-Permissive-2.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "disabled",
+        "reason": "117 GB; enable manually. HF: bsmock/pubtables-1m; official repo + GriTS: microsoft/table-transformer."
+      },
+      "metrics": ["grits_top", "grits_con", "grits_loc", "mean_average_precision"],
+      "notes": "575,305 detection pages + 947,642 structure tables. Official metric GriTS (and AP for detection)."
+    },
+    {
+      "name": "PubTabNet",
+      "slug": "pubtabnet",
+      "task": "table structure recognition",
+      "source": "https://github.com/ibm-aur-nlp/PubTabNet",
+      "local_dir": "pubtabnet",
+      "modality": "table images plus HTML structure tokens and cell boxes (JSONL)",
+      "license": "CDLA-Permissive-1.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "disabled",
+        "reason": "568k tables / ~12 GB; verify mirror license first. HF mirror: apoidea/pubtabnet-html; canonical: ibm-aur-nlp/PubTabNet."
+      },
+      "metrics": ["teds", "teds_struct"],
+      "notes": "Origin of the TEDS metric (arXiv:1911.10683). JSONL `html` field is the table-structure ground truth."
+    },
+    {
+      "name": "FinTabNet.c",
+      "slug": "fintabnet-c",
+      "task": "financial table structure (TSR-aligned)",
+      "source": "https://huggingface.co/datasets/bsmock/FinTabNet.c",
+      "local_dir": "fintabnet-c",
+      "modality": "table structure plus cell boxes",
+      "license": "CDLA-Permissive-2.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "hf",
+        "repo": "bsmock/FinTabNet.c",
+        "max_bytes": 5368709120
+      },
+      "metrics": ["teds", "grits_top", "grits_con"],
+      "notes": "3.43 GB. Canonicalized FinTabNet for table-structure recognition (arXiv:2303.00716). GriTS/TEDS."
+    },
+    {
+      "name": "SciTSR",
+      "slug": "scitsr",
+      "task": "scientific table structure (complex/merged cells)",
+      "source": "https://github.com/Academic-Hammer/SciTSR",
+      "local_dir": "scitsr",
+      "modality": "table images plus structure from LaTeX",
+      "license": "MIT (verify)",
+      "license_class": "unverified",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/Academic-Hammer/SciTSR",
+        "max_bytes": 5368709120
+      },
+      "metrics": ["teds", "grits_top", "grits_con"],
+      "notes": "15,000 tables (12k/3k). Cell-adjacency-relation F1 / TEDS. Confirm repo license before commercial use."
+    },
+    {
+      "name": "DocLayNet",
+      "slug": "doclaynet",
+      "task": "document layout block detection",
+      "source": "https://huggingface.co/datasets/docling-project/DocLayNet",
+      "local_dir": "doclaynet",
+      "modality": "page images plus COCO layout annotations",
+      "license": "CDLA-Permissive-1.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "disabled",
+        "reason": "large image+COCO corpus (80,863 pages). HF: docling-project/DocLayNet (the old ds4sd/DocLayNet org now redirects here)."
+      },
+      "metrics": ["mean_average_precision", "mean_best_iou"],
+      "notes": "11 layout classes, COCO bbox. Metric COCO mAP@[0.50:0.95]."
+    },
+    {
+      "name": "ICDAR2023 DocLayNet",
+      "slug": "icdar2023-doclaynet",
+      "task": "robust layout segmentation (competition split)",
+      "source": "https://huggingface.co/datasets/docling-project/icdar2023-doclaynet",
+      "local_dir": "icdar2023-doclaynet",
+      "modality": "page images plus COCO layout annotations",
+      "license": "CDLA-Permissive-1.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "disabled",
+        "reason": "competition image corpus. HF: docling-project/icdar2023-doclaynet."
+      },
+      "metrics": ["mean_average_precision"],
+      "notes": "ICDAR 2023 Robust Layout Segmentation in Corporate Documents."
+    },
+    {
+      "name": "CORD-v2",
+      "slug": "cord-v2",
+      "task": "receipt key-information extraction",
+      "source": "https://huggingface.co/datasets/naver-clova-ix/cord-v2",
+      "local_dir": "cord-v2",
+      "modality": "receipt images plus JSON parse and quad boxes",
+      "license": "CC-BY-4.0",
+      "license_class": "permissive",
+      "download": {
+        "kind": "hf",
+        "repo": "naver-clova-ix/cord-v2",
+        "max_bytes": 3221225472
+      },
+      "metrics": ["anchored_block_rate", "edit_similarity"],
+      "notes": "1,000 receipts (800/100/100). Donut field-F1 + tree-edit-distance accuracy in the literature."
+    },
+    {
+      "name": "FUNSD",
+      "slug": "funsd",
+      "task": "noisy form understanding",
+      "source": "https://guillaumejaume.github.io/FUNSD/",
+      "local_dir": "funsd",
+      "modality": "scanned form images plus word boxes and entity labels",
+      "license": "non-commercial research/education only",
+      "license_class": "eval_only",
+      "download": {
+        "kind": "url",
+        "url": "https://guillaumejaume.github.io/FUNSD/dataset.zip",
+        "filename": "dataset.zip",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["anchored_block_rate", "mean_best_iou"],
+      "notes": "199 forms (149/50). Word bbox + NER labels + entity linking."
+    },
+    {
+      "name": "XFUND",
+      "slug": "xfund",
+      "task": "multilingual form understanding (7 languages)",
+      "source": "https://huggingface.co/datasets/rogerdehe/xfund",
+      "local_dir": "xfund",
+      "modality": "form images plus boxes and key-value links",
+      "license": "other (CC BY-NC-SA cited; verify)",
+      "license_class": "eval_only",
+      "download": {
+        "kind": "disabled",
+        "reason": "verify license before download. HF: rogerdehe/xfund; original: doc-analysis/XFUND."
+      },
+      "metrics": ["anchored_block_rate", "mean_best_iou"],
+      "notes": "ZH, JA, ES, FR, IT, DE, PT — multilingual FUNSD."
+    },
+    {
+      "name": "Nougat (arXiv/PMC markdown GT)",
+      "slug": "nougat",
+      "task": "academic PDF-to-Markdown with math",
+      "source": "https://github.com/facebookresearch/nougat",
+      "local_dir": "nougat",
+      "modality": "pipeline to build markdown/LaTeX GT (no packaged dataset)",
+      "license": "MIT (code)",
+      "license_class": "permissive",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/facebookresearch/nougat",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["edit_similarity", "bleu"],
+      "notes": "No released GT dataset; ships a LaTeXML pipeline (arXiv/PMC -> .mmd markdown) to build math/markdown GT yourself. Paper metrics: edit distance, BLEU, METEOR, F1."
+    },
+    {
+      "name": "DocBank",
+      "slug": "docbank",
+      "task": "token-level layout labels",
+      "source": "https://github.com/doc-analysis/DocBank",
+      "local_dir": "docbank",
+      "modality": "PDF-derived token labels plus images",
+      "license": "unverified",
+      "license_class": "unverified",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/doc-analysis/DocBank",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["parse_success_rate", "anchored_block_rate", "edit_similarity"],
+      "notes": "Repo clone gives tooling/index/sample material; native token-label extraction reads words, labels, and boxes."
+    },
+    {
+      "name": "TableBank",
+      "slug": "tablebank",
+      "task": "table detection and recognition",
+      "source": "https://github.com/doc-analysis/TableBank",
+      "local_dir": "tablebank",
+      "modality": "Word/LaTeX-derived table images and labels",
+      "license": "CC BY-NC-ND (GitHub); Apache-2.0 (HF mirror)",
+      "license_class": "eval_only",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/doc-analysis/TableBank",
+        "max_bytes": 1073741824
+      },
+      "metrics": ["parse_success_rate", "anchored_block_rate", "mean_best_iou"],
+      "notes": "417,234 tables. GitHub download is gated behind a request form; HF mirror liminghao1630/TableBank is relicensed Apache-2.0."
+    },
+    {
+      "name": "SROIE",
+      "slug": "sroie",
+      "task": "receipt OCR and key fields",
+      "source": "https://github.com/zzzDavid/ICDAR-2019-SROIE",
+      "local_dir": "sroie",
+      "modality": "receipt images plus text/key-field annotations",
+      "license": "competition/research (mirrors lack explicit license)",
+      "license_class": "unverified",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/zzzDavid/ICDAR-2019-SROIE",
+        "max_bytes": 5368709120
+      },
+      "metrics": ["parse_success_rate", "anchored_block_rate", "char_error_rate", "word_error_rate"],
+      "notes": "1,000 receipts. Official source is the ICDAR RRC portal; mirror license unverified for redistribution."
+    },
+    {
+      "name": "ckorzen benchmark",
+      "slug": "ckorzen",
+      "task": "PDF text extraction and reading order",
+      "source": "https://github.com/ckorzen/pdf-text-extraction-benchmark",
+      "local_dir": "ckorzen-pdf-text-extraction",
+      "modality": "scientific PDFs plus text extraction targets",
+      "license": "MIT",
+      "license_class": "permissive",
+      "download": {
+        "kind": "git",
+        "url": "https://github.com/ckorzen/pdf-text-extraction-benchmark",
+        "max_bytes": 5368709120
+      },
+      "metrics": ["parse_success_rate", "char_error_rate", "word_error_rate", "edit_similarity", "reading_order_ard"],
+      "notes": "Good native text, order, paragraph, and role benchmark; bundled text/HTML and feature-box TSV exercise non-PDF fallback extraction."
+    }
+  ]
+}

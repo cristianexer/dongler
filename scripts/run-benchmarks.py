@@ -12,10 +12,27 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eval_metrics import (  # noqa: E402  (local sibling package, needs sys.path above)
+    bleu as text_bleu,
+    char_error_rate,
+    edit_similarity as text_edit_similarity,
+    grid_to_tree,
+    grits_con,
+    grits_top,
+    mean_average_precision,
+    mean_best_iou,
+    parse_html_table,
+    teds,
+    teds_struct,
+    word_error_rate,
+)
 
 
 START_MARKER = "<!-- BENCHMARKS:START -->"
@@ -473,6 +490,46 @@ def best_extraction_accuracy(
     return extraction_accuracy(reference.text, extracted_text_from_document_json(json_out))
 
 
+def best_aligned_extracted_text(reference: ReferenceTarget, json_out: Path) -> str | None:
+    """Pick the extracted page (or whole-doc) text best aligned to the reference.
+
+    Mirrors ``best_extraction_accuracy`` so the secondary text metrics
+    (CER/WER/edit-similarity/BLEU) are computed on the same aligned text as the
+    headline token-F1.
+    """
+    candidates: list[str] = []
+    if reference.page_numbers:
+        candidates.extend(
+            extracted_text_from_document_json(json_out, page_number)
+            for page_number in reference.page_numbers
+        )
+    candidates.append(extracted_text_from_document_json(json_out))
+    candidates = [candidate for candidate in candidates if candidate]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda text: extraction_accuracy(reference.text, text) or 0.0)
+
+
+def text_metric_bundle(reference: ReferenceTarget, json_out: Path) -> dict[str, float] | None:
+    """Secondary text-accuracy metrics for a document with an aligned text target.
+
+    Returns char/word error rate, edit similarity, and BLEU, computed on the
+    ligature-normalized best-aligned extracted text. Complements the headline
+    token-F1 without changing it.
+    """
+    extracted = best_aligned_extracted_text(reference, json_out)
+    if extracted is None:
+        return None
+    ref = normalize_accuracy_ligatures(reference.text)
+    hyp = normalize_accuracy_ligatures(extracted)
+    return {
+        "char_error_rate": char_error_rate(ref, hyp),
+        "word_error_rate": word_error_rate(ref, hyp),
+        "edit_similarity": text_edit_similarity(ref, hyp),
+        "bleu": text_bleu(ref, hyp),
+    }
+
+
 def olmocr_document_key(document: Path, local_dir: Path) -> str:
     pdf_root = local_dir / "bench_data" / "pdfs"
     try:
@@ -920,6 +977,167 @@ def table_grid_from_block(block: dict[str, Any]) -> list[list[str]]:
             if len(cell_rows) > len(rows):
                 rows = cell_rows
     return rows
+
+
+TABLE_GROUND_TRUTH_SUFFIXES = (".tables.html", ".gt.html", ".tables.json")
+
+
+def extract_html_table_blocks(text: str) -> list[str]:
+    """Return each ``<table>...</table>`` block (case-insensitive) from HTML text."""
+    return [match.group(0) for match in re.finditer(r"(?is)<table\b.*?</table>", text)]
+
+
+def ground_truth_table_html(document: Path) -> list[str]:
+    """Aligned ground-truth table HTML for a document, if a sibling target exists.
+
+    Datasets enable TEDS by dropping one of ``<stem>.tables.html`` /
+    ``<stem>.gt.html`` (one or more ``<table>`` blocks) or ``<stem>.tables.json``
+    (a JSON list of HTML strings) next to the source document.
+    """
+    for suffix in TABLE_GROUND_TRUTH_SUFFIXES:
+        candidate = document.with_name(document.stem + suffix)
+        if not candidate.exists():
+            continue
+        try:
+            content = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if suffix.endswith(".json"):
+            try:
+                value = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, list):
+                tables = [str(item) for item in value if str(item).strip()]
+                if tables:
+                    return tables
+        else:
+            tables = extract_html_table_blocks(content)
+            if tables:
+                return tables
+    return []
+
+
+def table_node_to_grid(node: Any) -> list[list[str]]:
+    """Flatten a parsed table ``TableNode`` into a 2D grid of cell text."""
+    grid: list[list[str]] = []
+    for row_node in getattr(node, "children", []):
+        if getattr(row_node, "tag", "") != "tr":
+            continue
+        grid.append([getattr(cell, "content", "") for cell in getattr(row_node, "children", [])])
+    return grid
+
+
+def table_metric_bundle(document: Path, json_out: Path) -> dict[str, Any] | None:
+    """TEDS / TEDS-Struct / GriTS of extracted tables vs aligned ground-truth tables.
+
+    For each ground-truth table, takes the best score over all extracted tables,
+    then averages. Returns ``None`` when no aligned ground-truth tables exist.
+    """
+    gt_tables = ground_truth_table_html(document)
+    if not gt_tables:
+        return None
+    try:
+        doc = json.loads(json_out.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    pred_grids = [grid for grid in table_grids_from_document(doc) if grid]
+    pred_trees = [grid_to_tree(grid) for grid in pred_grids]
+    gt_nodes = [parse_html_table(html_text) for html_text in gt_tables]
+    gt_grids = [table_node_to_grid(node) for node in gt_nodes]
+
+    def best_mean(scorer, candidates, targets) -> float:
+        scores = [max((scorer(candidate, target) for candidate in candidates), default=0.0) for target in targets]
+        return sum(scores) / len(scores) if scores else 0.0
+
+    return {
+        "teds": best_mean(teds, pred_trees, gt_nodes),
+        "teds_struct": best_mean(teds_struct, pred_trees, gt_nodes),
+        "grits_con": best_mean(grits_con, pred_grids, gt_grids),
+        "grits_top": best_mean(grits_top, pred_grids, gt_grids),
+        "gt_tables": len(gt_nodes),
+        "pred_tables": len(pred_trees),
+    }
+
+
+def box_tuple_from_entry(entry: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    """Normalize a ground-truth/box entry to an ``(x, y, w, h)`` float tuple."""
+    raw = entry.get("box")
+    if isinstance(raw, (list, tuple)) and len(raw) == 4 and all(isinstance(v, (int, float)) for v in raw):
+        return (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
+    keys = ("x", "y", "width", "height")
+    if all(isinstance(entry.get(key), (int, float)) for key in keys):
+        return (float(entry["x"]), float(entry["y"]), float(entry["width"]), float(entry["height"]))
+    return None
+
+
+def ground_truth_boxes_for_document(document: Path) -> list[dict[str, Any]] | None:
+    """Aligned ground-truth layout boxes from a sibling ``<stem>.boxes.json``.
+
+    The JSON is a list of entries, each either ``{"box": [x, y, w, h], "label"?}``
+    or ``{"x", "y", "width", "height", "label"?}``, in the same coordinate frame
+    as the extracted document's block bboxes.
+    """
+    candidate = document.with_name(document.stem + ".boxes.json")
+    if not candidate.exists():
+        return None
+    try:
+        value = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, list):
+        return None
+    boxes = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        box = box_tuple_from_entry(entry)
+        if box is not None:
+            boxes.append({"box": box, "label": str(entry.get("label", "block"))})
+    return boxes or None
+
+
+def predicted_layout_boxes(document_json: dict[str, Any]) -> list[tuple[float, float, float, float]]:
+    """Extracted block bounding boxes as ``(x, y, w, h)`` tuples."""
+    boxes = []
+    for page in document_json.get("pages", []):
+        for block in page.get("blocks", []):
+            bbox = block.get("bbox") if isinstance(block, dict) else None
+            if isinstance(bbox, dict):
+                box = box_tuple_from_entry(bbox)
+                if box is not None:
+                    boxes.append(box)
+    return boxes
+
+
+def layout_metric_bundle(document: Path, json_out: Path) -> dict[str, Any] | None:
+    """Label-agnostic bbox localization metrics vs aligned ground-truth boxes.
+
+    ``mean_best_iou`` is recall-oriented (each ground-truth box's best overlap);
+    ``map_localization`` is COCO mAP@[.5:.95] with all boxes collapsed to one
+    class, so it measures pure localization quality independent of any layout
+    taxonomy. Returns ``None`` when no aligned ground-truth boxes exist.
+    """
+    gt = ground_truth_boxes_for_document(document)
+    if not gt:
+        return None
+    try:
+        doc = json.loads(json_out.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    pred_boxes = predicted_layout_boxes(doc)
+    gt_boxes = [entry["box"] for entry in gt]
+    recall_iou = mean_best_iou(pred_boxes, gt_boxes)
+    map_localization = mean_average_precision(
+        [{"box": box, "score": 1.0, "label": 0} for box in pred_boxes],
+        [{"box": box, "label": 0} for box in gt_boxes],
+    )
+    return {
+        "mean_best_iou": recall_iou if recall_iou is not None else 0.0,
+        "map_localization": map_localization,
+        "gt_boxes": len(gt_boxes),
+        "pred_boxes": len(pred_boxes),
+    }
 
 
 def evaluate_olmocr_unit_test(
@@ -1542,6 +1760,11 @@ def benchmark_dataset(
         "ground_truth_checks": 0,
         "ground_truth_accuracy_by_document": [],
         "ground_truth_metric": None,
+        "text_metrics": None,
+        "table_metrics": None,
+        "table_metrics_by_document": [],
+        "layout_metrics": None,
+        "layout_metrics_by_document": [],
         "olmocr_failure_count": 0,
         "olmocr_failures": [],
         "olmocr_pass_rate_by_check_type": {},
@@ -1566,6 +1789,12 @@ def benchmark_dataset(
     total_anchored = 0
     total_accuracy = 0.0
     total_accuracy_weight = 0
+    text_metric_sums: dict[str, float] = {}
+    text_metric_weight = 0
+    table_metric_sums: dict[str, float] = {}
+    table_metric_weight = 0
+    layout_metric_sums: dict[str, float] = {}
+    layout_metric_weight = 0
     olmocr_check_type_stats: dict[str, dict[str, int]] = {}
     olmocr_split_stats: dict[str, dict[str, int]] = {}
 
@@ -1658,13 +1887,18 @@ def benchmark_dataset(
                     result["ground_truth_documents"] += 1
                     result["ground_truth_checks"] += 1
                     result["ground_truth_metric"] = result["ground_truth_metric"] or "token_f1"
-                    result["ground_truth_accuracy_by_document"].append(
-                        {
-                            "document": str(document),
-                            "accuracy": accuracy,
-                            "metric": "token_f1",
-                        }
-                    )
+                    per_document = {
+                        "document": str(document),
+                        "accuracy": accuracy,
+                        "metric": "token_f1",
+                    }
+                    bundle = text_metric_bundle(reference, json_out)
+                    if bundle:
+                        per_document["metrics"] = bundle
+                        for key, value in bundle.items():
+                            text_metric_sums[key] = text_metric_sums.get(key, 0.0) + value
+                        text_metric_weight += 1
+                    result["ground_truth_accuracy_by_document"].append(per_document)
             elif document.suffix.lower() in IMAGE_SUFFIXES:
                 accuracy = full_image_geometry_accuracy(json_out)
                 if accuracy is not None:
@@ -1680,6 +1914,22 @@ def benchmark_dataset(
                             "metric": "full_image_iou",
                         }
                     )
+        table_bundle = table_metric_bundle(document, json_out)
+        if table_bundle is not None:
+            result["table_metrics_by_document"].append(
+                {"document": str(document), **table_bundle}
+            )
+            for key in ("teds", "teds_struct", "grits_con", "grits_top"):
+                table_metric_sums[key] = table_metric_sums.get(key, 0.0) + table_bundle[key]
+            table_metric_weight += 1
+        layout_bundle = layout_metric_bundle(document, json_out)
+        if layout_bundle is not None:
+            result["layout_metrics_by_document"].append(
+                {"document": str(document), **layout_bundle}
+            )
+            for key in ("mean_best_iou", "map_localization"):
+                layout_metric_sums[key] = layout_metric_sums.get(key, 0.0) + layout_bundle[key]
+            layout_metric_weight += 1
         if (
             repo_root is not None
             and visual_out_dir is not None
@@ -1719,6 +1969,25 @@ def benchmark_dataset(
     result["pages_per_second"] = result["pages"] / total_elapsed if total_elapsed else None
     if result["ground_truth_documents"]:
         result["ground_truth_accuracy"] = total_accuracy / total_accuracy_weight
+    if text_metric_weight:
+        result["text_metrics"] = {
+            key: value / text_metric_weight for key, value in text_metric_sums.items()
+        }
+        result["text_metrics"]["documents"] = text_metric_weight
+    if table_metric_weight:
+        result["table_metrics"] = {
+            "teds": table_metric_sums.get("teds", 0.0) / table_metric_weight,
+            "teds_struct": table_metric_sums.get("teds_struct", 0.0) / table_metric_weight,
+            "grits_con": table_metric_sums.get("grits_con", 0.0) / table_metric_weight,
+            "grits_top": table_metric_sums.get("grits_top", 0.0) / table_metric_weight,
+            "documents": table_metric_weight,
+        }
+    if layout_metric_weight:
+        result["layout_metrics"] = {
+            "mean_best_iou": layout_metric_sums.get("mean_best_iou", 0.0) / layout_metric_weight,
+            "map_localization": layout_metric_sums.get("map_localization", 0.0) / layout_metric_weight,
+            "documents": layout_metric_weight,
+        }
     result["olmocr_failure_count"] = len(result["olmocr_failures"])
     result["olmocr_pass_rate_by_check_type"] = format_olmocr_stats(olmocr_check_type_stats)
     result["olmocr_pass_rate_by_split"] = format_olmocr_stats(olmocr_split_stats)
@@ -1764,16 +2033,18 @@ def markdown_table(
         "",
         "Coverage is `parse / bbox / anchors`. Ground-truth accuracy is token-F1, "
         "olmOCR unit-check pass rate, or full-image IoU; `n/a` means no local target signal. "
-        "Detailed task names, discovery counts, native scores, and notes are recorded in "
-        "`eval/out/benchmarks/latest.json`.",
+        "Edit sim is the character-level edit similarity (1 - normalized edit distance) "
+        "where an aligned text target exists. Per-document CER/WER/BLEU and table TEDS are "
+        "recorded in `eval/out/benchmarks/latest.json`.",
         "",
-        "| Dataset | Status | Local data | Docs eval | Coverage | Pages/sec | GT accuracy |",
-        "| --- | --- | ---: | ---: | --- | ---: | ---: |",
+        "| Dataset | Status | Local data | Docs eval | Coverage | Pages/sec | GT accuracy | Edit sim |",
+        "| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |",
     ]
     for row in results:
         local_mb = row["local_bytes"] / (1024 * 1024)
+        text_metrics = row.get("text_metrics") or {}
         lines.append(
-            "| {dataset} | {status} | {local_mb:.1f} MB | {documents_evaluated} | {coverage} | {pps} | {accuracy} |".format(
+            "| {dataset} | {status} | {local_mb:.1f} MB | {documents_evaluated} | {coverage} | {pps} | {accuracy} | {edit_sim} |".format(
                 dataset=row["dataset"],
                 status=row["status"],
                 local_mb=local_mb,
@@ -1787,6 +2058,7 @@ def markdown_table(
                 ),
                 pps=format_float(row["pages_per_second"]),
                 accuracy=format_percent(row["ground_truth_accuracy"]),
+                edit_sim=format_percent(text_metrics.get("edit_similarity")),
             )
         )
     return "\n".join(lines)

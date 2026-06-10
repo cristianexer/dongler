@@ -1112,6 +1112,14 @@ fn load_path_keeps_multi_section_statement_as_one_table() {
         })
         .expect("expected a single table spanning all sections");
 
+    // The period header (years) is promoted to the header row; the statement
+    // *title* above it stays out of the header (not pulled into the label column).
+    assert_eq!(table.headers, vec!["".to_owned(), "2024".to_owned(), "2023".to_owned()]);
+    assert!(
+        table.rows.iter().all(|row| row[0] != "CONSOLIDATED STATEMENTS OF OPERATIONS"),
+        "statement title leaked into a table row"
+    );
+
     let labels: Vec<&str> = table.rows.iter().map(|row| row[0].as_str()).collect();
     assert!(labels.contains(&"Operating activities:"), "missing first section header: {labels:?}");
     assert!(labels.contains(&"Operating expenses:"), "missing later section header: {labels:?}");

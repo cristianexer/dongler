@@ -2576,6 +2576,23 @@ fn wrapped_label_above(
     result
 }
 
+/// A row whose figure columns are all four-digit years (e.g. "2025 2024 2023").
+/// Such a row is a period header, not data — column titles, not values — so it
+/// belongs in the header even when it also carries a label like "Year Ended …".
+fn is_period_header_row(row: &[String]) -> bool {
+    let values: Vec<&str> = row[1..]
+        .iter()
+        .map(|cell| cell.trim())
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    !values.is_empty()
+        && values.iter().all(|cell| {
+            cell.len() == 4
+                && cell.chars().all(|c| c.is_ascii_digit())
+                && cell.parse::<i32>().is_ok_and(|year| (1900..=2100).contains(&year))
+        })
+}
+
 fn build_columnar_table(
     page_number: usize,
     lines: &[TextLine],
@@ -2609,12 +2626,21 @@ fn build_columnar_table(
                 && line.bbox.x + line.bbox.width >= first_column_left - 24.0
                 && !text_line_plain_text(line).to_ascii_lowercase().starts_with("table ")
                 && !line_is_data_row(line, column_count)
+                // A real column header sits *over the numeric columns*; a line whose
+                // content all falls in the label column is a statement title or a
+                // "(in millions)" note centered above the table, not a header.
+                && assign_row(index)[1..].iter().any(|cell| !cell.trim().is_empty())
         })
         .collect();
 
     let mut data_start = 0usize;
     for (position, &index) in row_indices.iter().enumerate() {
-        if assign_row(index)[0].trim().is_empty() {
+        let row = assign_row(index);
+        // A leading row is part of the header when its label column is empty (a bare
+        // "2024 2023 2022" line) or its figure cells are all years/periods (a
+        // "Year Ended June 30, | 2025 | 2024 | 2023" line) — the body begins at the
+        // first row carrying real figures.
+        if row[0].trim().is_empty() || is_period_header_row(&row) {
             header_indices.push(index);
             data_start = position + 1;
         } else {

@@ -1153,6 +1153,12 @@ fn load_path_extracts_wide_numeric_table_without_section_headers() {
         .expect("expected a wide columnar table");
 
     assert!(table.headers.len() >= 6, "expected >= 6 columns, got {}", table.headers.len());
+    // The prose caption above the table (a many-word sentence carrying "2024")
+    // neither pollutes the header nor becomes a row nor scatters phantom columns.
+    assert!(
+        table.headers.iter().chain(table.rows.iter().flatten()).all(|cell| !cell.contains("following table")),
+        "prose caption leaked into the table"
+    );
     let north = table.rows.iter().find(|row| row[0] == "North America").expect("North America row");
     assert_eq!(north[1], "4,200");
     assert_eq!(north[6], "6,500");
@@ -3140,7 +3146,7 @@ fn wrapped_label_statement_pdf() -> Vec<u8> {
 fn wide_numeric_table_pdf() -> Vec<u8> {
     let mut ops = Vec::new();
     for (text, x, y) in [
-        ("Segment revenue (in millions)", 70.0, 752.0),
+        ("The following table presents segment revenue in millions for 2024 across all regions and markets", 70.0, 752.0),
         ("2024", 210.0, 738.0),
         ("2024", 270.0, 738.0),
         ("2024", 330.0, 738.0),

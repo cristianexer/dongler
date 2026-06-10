@@ -2331,6 +2331,12 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
     let mut right_edges: Vec<f32> = Vec::new();
     let mut data_rows = 0usize;
     for cells in &line_cells {
+        // A prose sentence near the table (a caption like "The following table shows
+        // … for 2024, 2023 and 2022 …") carries figures but is not a data row;
+        // letting it vote scatters phantom columns. Skip lines with a many-word cell.
+        if cells_contain_prose(cells) {
+            continue;
+        }
         let values = cells.iter().filter(|cell| is_value_cell(&cell.text)).count();
         if values >= 2 {
             data_rows += 1;
@@ -2477,6 +2483,19 @@ fn is_numeric_value(text: &str) -> bool {
 /// mostly blank still registers.
 fn is_value_cell(text: &str) -> bool {
     is_numeric_value(text) || matches!(text.trim(), "—" | "–")
+}
+
+/// Whether any cell on the line is a prose sentence (a long run of words) rather
+/// than a label or a figure. Table captions and intro sentences sit near tables
+/// and carry years/figures, but must not vote for columns or join the header.
+fn cells_contain_prose(cells: &[TextRun]) -> bool {
+    cells.iter().any(|cell| {
+        cell.text
+            .split_whitespace()
+            .filter(|word| word.chars().any(|c| c.is_alphabetic()))
+            .count()
+            > 12
+    })
 }
 
 /// Cluster right-edge x positions into columns: sort, split where consecutive
@@ -2635,6 +2654,7 @@ fn build_columnar_table(
                 && line.bbox.x + line.bbox.width >= first_column_left - 24.0
                 && !text_line_plain_text(line).to_ascii_lowercase().starts_with("table ")
                 && !line_is_data_row(line, column_count)
+                && !cells_contain_prose(&line_cells[index])
                 // A real column header sits *over the numeric columns*; a line whose
                 // content all falls in the label column is a statement title or a
                 // "(in millions)" note centered above the table, not a header.
@@ -2705,8 +2725,15 @@ fn build_columnar_table(
         }
     }
 
+    let mut prose_skipped: Vec<usize> = Vec::new();
     for &index in &row_indices[data_start..] {
         if consumed.contains(&index) {
+            continue;
+        }
+        // A prose caption that landed inside the table span is not a row; drop it
+        // here and let it render as its own paragraph rather than a stray table row.
+        if cells_contain_prose(&line_cells[index]) {
+            prose_skipped.push(index);
             continue;
         }
         let mut row = assign_row(index);
@@ -2759,6 +2786,9 @@ fn build_columnar_table(
     let mut line_index_set: Vec<usize> = row_indices.to_vec();
     line_index_set.extend(header_indices.iter().copied());
     line_index_set.extend(consumed.iter().copied());
+    // Prose captions dropped from the body stay out of the table's claimed lines so
+    // they are emitted as their own text blocks.
+    line_index_set.retain(|index| !prose_skipped.contains(index));
     line_index_set.sort_unstable();
     line_index_set.dedup();
     let bbox = union_boxes(line_index_set.iter().map(|&index| lines[index].bbox))?;

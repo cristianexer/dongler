@@ -2075,6 +2075,13 @@ def parse_args() -> argparse.Namespace:
         help="Maximum files per dataset to evaluate; omit or pass 0 to evaluate all discovered files.",
     )
     parser.add_argument("--dataset", action="append", help="Dataset slug to include; may repeat.")
+    parser.add_argument(
+        "--cli",
+        help=(
+            "Path to a prebuilt dongler CLI to benchmark instead of rebuilding from the "
+            "current checkout. Useful for A/B comparisons across revisions."
+        ),
+    )
     parser.add_argument("--update-readme", action="store_true")
     parser.add_argument("--readme", default="README.md")
     parser.add_argument(
@@ -2138,7 +2145,7 @@ def main() -> int:
     except ValueError as error:
         raise SystemExit(f"error: {error}") from error
 
-    cli = build_cli(repo_root)
+    cli = Path(args.cli).resolve() if args.cli else build_cli(repo_root)
     generated_at = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     results = [
         benchmark_dataset(

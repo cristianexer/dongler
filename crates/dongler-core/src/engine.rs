@@ -218,6 +218,8 @@ fn docbank_line_block(line: DocBankLine) -> Option<Block> {
             bbox: Some(token.bbox),
             font: None,
             size: None,
+            bold: false,
+            italic: false,
         })
         .collect::<Vec<_>>();
 

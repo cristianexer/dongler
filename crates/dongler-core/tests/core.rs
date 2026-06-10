@@ -513,6 +513,83 @@ fn load_path_expands_pdf_unicode_ligatures() {
 }
 
 #[test]
+fn load_path_detects_bold_and_italic_pdf_fonts() {
+    let path = write_temp_bytes("bold-italic.pdf", bold_italic_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(
+        markdown.contains("**Important warning**"),
+        "expected bold markdown: {markdown}"
+    );
+    assert!(
+        markdown.contains("*Subtle aside note*"),
+        "expected italic markdown: {markdown}"
+    );
+
+    let mut saw_bold = false;
+    let mut saw_italic = false;
+    for block in &document.pages[0].blocks {
+        if let Block::Text(text) = block {
+            for span in text.lines.iter().flat_map(|line| line.spans.iter()) {
+                saw_bold |= span.bold;
+                saw_italic |= span.italic;
+            }
+        }
+    }
+    assert!(saw_bold, "expected a bold span");
+    assert!(saw_italic, "expected an italic span");
+}
+
+#[test]
+fn load_path_applies_pdf_page_rotation_to_geometry() {
+    let path = write_temp_bytes("rotated.pdf", rotated_page_pdf(90));
+
+    let document = load_path(&path).unwrap();
+    let page = &document.pages[0];
+
+    assert_eq!(page.rotation, Some(90));
+    // Display dimensions swap for a 90/270 rotation.
+    assert_eq!(page.width, Some(792.0));
+    assert_eq!(page.height, Some(612.0));
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(markdown.contains("Rotated heading"), "markdown: {markdown}");
+    assert!(markdown.contains("Body text below it"), "markdown: {markdown}");
+
+    for block in &page.blocks {
+        if let Block::Text(text) = block {
+            if let Some(bbox) = text.bbox {
+                assert!(
+                    bbox.x >= -1.0 && bbox.x <= 792.0 && bbox.y >= -1.0 && bbox.y <= 612.0,
+                    "bbox {bbox:?} falls outside the rotated page extent"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn load_path_uses_font_ascent_descent_for_glyph_bbox() {
+    let path = write_temp_bytes("font-metrics.pdf", font_metrics_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let block = match &document.pages[0].blocks[0] {
+        Block::Text(text) => text,
+        other => panic!("expected text block, got {other:?}"),
+    };
+    let height = block.bbox.unwrap().height;
+    // (ascent 900 - descent -300)/1000 * 12pt = 14.4, distinct from the 12.0
+    // flat-font-size box the extractor used before font metrics were applied.
+    assert!(
+        (height - 14.4).abs() < 0.6,
+        "bbox height {height} should reflect the font ascent/descent"
+    );
+}
+
+#[test]
 fn load_path_decodes_ascii85_flate_pdf_streams() {
     let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
 
@@ -2606,6 +2683,36 @@ end";
         content_stream,
         cmap.len(),
         cmap
+    )
+    .into_bytes();
+    pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+fn font_metrics_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (Metrics) Tj ET",
+        "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Custom /FontDescriptor 7 0 R >>\nendobj\n7 0 obj\n<< /Type /FontDescriptor /FontName /Custom /Flags 32 /Ascent 900 /Descent -300 >>\nendobj\n",
+    )
+}
+
+fn rotated_page_pdf(rotate: i32) -> Vec<u8> {
+    pdf_fixture(
+        &format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate {rotate} /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        "BT /F1 12 Tf 72 720 Td (Rotated heading) Tj 0 -24 Td (Body text below it) Tj ET",
+        "",
+    )
+}
+
+fn bold_italic_pdf() -> Vec<u8> {
+    let content_stream = "BT /F1 12 Tf 72 720 Td (Important warning) Tj /F2 12 Tf 0 -20 Td (Subtle aside note) Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>\nendobj\n",
+        content_stream.len(),
+        content_stream
     )
     .into_bytes();
     pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");

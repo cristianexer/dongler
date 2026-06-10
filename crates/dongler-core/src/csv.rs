@@ -341,6 +341,8 @@ fn tesseract_line_block(
             bbox: Some(word.bbox),
             font: None,
             size: None,
+            bold: false,
+            italic: false,
         })
         .collect::<Vec<_>>();
     let confidence = average_confidence(words.iter().filter_map(|word| word.confidence));

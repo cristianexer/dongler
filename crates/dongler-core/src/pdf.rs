@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
 
 use flate2::read::ZlibDecoder;
 use rayon::prelude::*;
@@ -51,8 +52,13 @@ struct PageExtraction {
 struct TextRun {
     text: String,
     bbox: BBox,
+    /// Page-space y of the text baseline, kept separate from `bbox` (which now
+    /// spans ascent..descent) so super/subscript detection stays baseline-based.
+    baseline_y: f32,
     font: Option<String>,
     size: f32,
+    bold: bool,
+    italic: bool,
     source_object_ids: Vec<String>,
 }
 
@@ -60,6 +66,7 @@ struct TextRun {
 struct TextLine {
     runs: Vec<TextRun>,
     bbox: BBox,
+    baseline_y: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +117,10 @@ struct FontDecoder {
     encoding: HashMap<u8, String>,
     widths: HashMap<char, f32>,
     max_code_len: usize,
+    bold: bool,
+    italic: bool,
+    ascent: f32,
+    descent: f32,
 }
 
 impl FontDecoder {
@@ -237,13 +248,19 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         return Err(DonglerError::pdf("no indirect objects found"));
     }
 
-    let object_map = objects
+    // Share each parsed object behind a single Arc between the ordered list
+    // (which preserves page order and any duplicate object numbers exactly) and
+    // the lookup map, so object bodies are stored once instead of copied per
+    // map entry.
+    let title = extract_info_string(&objects, "Title");
+    let objects: Vec<Arc<PdfObject>> = objects.into_iter().map(Arc::new).collect();
+    let object_map: HashMap<u32, Arc<PdfObject>> = objects
         .iter()
-        .map(|object| (object.object_number, object.clone()))
-        .collect::<HashMap<_, _>>();
+        .map(|object| (object.object_number, Arc::clone(object)))
+        .collect();
     let page_seeds = objects
         .iter()
-        .filter_map(|object| page_seed(object, &object_map))
+        .filter_map(|object| page_seed(object.as_ref(), &object_map))
         .enumerate()
         .map(|(index, mut seed)| {
             seed.number = index + 1;
@@ -274,9 +291,33 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         ));
     }
 
+    // Decode each font once per document. Fonts (and their compressed ToUnicode
+    // CMaps) are shared resources referenced by most pages, so decoding them in
+    // every page re-inflates the same streams pages*fonts times.
+    let mut font_object_numbers: Vec<u32> = page_seeds
+        .iter()
+        .flat_map(|seed| {
+            let resource_body = resolve_resource_body(&seed.body, &object_map);
+            let resource_text = resource_body.as_deref().unwrap_or(&seed.body);
+            resolve_named_resource_refs(resource_text, "/Font", &object_map)
+                .into_values()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    font_object_numbers.sort_unstable();
+    font_object_numbers.dedup();
+    let font_cache: HashMap<u32, Arc<FontDecoder>> = font_object_numbers
+        .into_par_iter()
+        .filter_map(|number| {
+            object_map
+                .get(&number)
+                .map(|font| (number, Arc::new(font_decoder(font.as_ref(), &object_map))))
+        })
+        .collect();
+
     let page_extractions = page_seeds
         .par_iter()
-        .map(|seed| extract_page(seed, &object_map))
+        .map(|seed| extract_page(seed, &object_map, &font_cache))
         .collect::<Vec<_>>();
 
     let mut pages = Vec::with_capacity(page_extractions.len());
@@ -296,7 +337,7 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
             format: "pdf".to_owned(),
             engine: engine_name.to_owned(),
             source: source.path.clone(),
-            title: extract_info_string(&objects, "Title"),
+            title,
             character_count: all_text.chars().count(),
             word_count: all_text.split_whitespace().count(),
             block_count: pages.iter().map(|page| page.blocks.len()).sum(),
@@ -310,7 +351,11 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
     })
 }
 
-fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageExtraction {
+fn extract_page(
+    seed: &PageSeed,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
+    font_cache: &HashMap<u32, Arc<FontDecoder>>,
+) -> PageExtraction {
     let media_box = parse_number_array_after(&seed.body, "/MediaBox")
         .unwrap_or_else(|| vec![0.0, 0.0, 612.0, 792.0]);
     let width =
@@ -322,7 +367,7 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
     let resource_body = resolve_resource_body(&seed.body, object_map);
     let resource_text = resource_body.as_deref().unwrap_or(&seed.body);
     let xobjects = resolve_named_resource_refs(resource_text, "/XObject", object_map);
-    let fonts = load_font_decoders(resource_text, object_map);
+    let fonts = load_font_decoders(resource_text, object_map, font_cache);
 
     let mut warnings = Vec::new();
     let mut extraction = ContentExtraction {
@@ -336,7 +381,7 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
     for content_ref in contents {
         match object_map
             .get(&(content_ref as u32))
-            .map(decode_stream_object)
+            .map(|object| decode_stream_object(object.as_ref()))
         {
             Some(Ok(Some(stream))) => {
                 let object_id = format!("{content_ref} 0 R");
@@ -370,6 +415,42 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
     }
 
     warnings.append(&mut extraction.warnings);
+
+    // Apply the page /Rotate so line grouping and reading order run in the
+    // orientation a reader sees. Display dimensions swap for 90/270.
+    let normalized_rotation = rotation.map(|value| value.rem_euclid(360)).unwrap_or(0);
+    if normalized_rotation != 0 {
+        for run in &mut extraction.text_runs {
+            run.bbox = rotate_bbox(run.bbox, normalized_rotation, width, height);
+        }
+        for image in &mut extraction.images {
+            if let Some(bbox) = image.bbox {
+                image.bbox = Some(rotate_bbox(bbox, normalized_rotation, width, height));
+            }
+        }
+        for edge in &mut extraction.edges {
+            let (x0, y0) = rotate_point(edge.x0, edge.y0, normalized_rotation, width, height);
+            let (x1, y1) = rotate_point(edge.x1, edge.y1, normalized_rotation, width, height);
+            edge.x0 = x0;
+            edge.y0 = y0;
+            edge.x1 = x1;
+            edge.y1 = y1;
+        }
+    }
+    let (page_width, page_height) = if matches!(normalized_rotation, 90 | 270) {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let (page_x, page_y) = if normalized_rotation == 0 {
+        (
+            media_box.first().copied().unwrap_or(0.0),
+            media_box.get(1).copied().unwrap_or(0.0),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+
     let lines = group_text_runs(extraction.text_runs);
     let mut blocks = build_blocks(seed.number, &lines, &extraction.edges);
     if blocks.is_empty() && !extraction.images.is_empty() {
@@ -384,14 +465,14 @@ fn extract_page(seed: &PageSeed, object_map: &HashMap<u32, PdfObject>) -> PageEx
 
     let page = Page {
         number: seed.number,
-        width: Some(width),
-        height: Some(height),
+        width: Some(page_width),
+        height: Some(page_height),
         rotation,
         bbox: Some(BBox {
-            x: media_box.first().copied().unwrap_or(0.0),
-            y: media_box.get(1).copied().unwrap_or(0.0),
-            width,
-            height,
+            x: page_x,
+            y: page_y,
+            width: page_width,
+            height: page_height,
         }),
         blocks,
         images: extraction.images,
@@ -407,8 +488,8 @@ fn interpret_content_stream(
     page_number: usize,
     source_object_ids: &[String],
     xobjects: &HashMap<String, u32>,
-    fonts: &HashMap<String, FontDecoder>,
-    object_map: &HashMap<u32, PdfObject>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> ContentExtraction {
     let mut state = GraphicsState::default();
     let mut graphics_stack = Vec::new();
@@ -645,7 +726,7 @@ fn push_text_run(
     state: &mut GraphicsState,
     source_object_ids: &[String],
     text: String,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) {
     let advance = text_advance_width(&text, state, fonts);
     if text.trim().is_empty() {
@@ -653,12 +734,24 @@ fn push_text_run(
         return;
     }
 
-    let bbox = text_run_bbox(state, advance);
+    let font = state.font_name.as_ref().and_then(|name| fonts.get(name));
+    let (bold, italic) = font
+        .map(|font| (font.bold, font.italic))
+        .unwrap_or((false, false));
+    let (ascent, descent) = font
+        .map(|font| (font.ascent, font.descent))
+        .unwrap_or((0.75, -0.25));
+    let bbox = text_run_bbox(state, advance, ascent, descent);
+    let (base_x, base_y) = state.text_matrix.point(0.0, state.text_rise);
+    let (_, baseline_y) = state.ctm.point(base_x, base_y);
     extraction.text_runs.push(TextRun {
         text,
         bbox,
+        baseline_y,
         font: state.font_name.clone(),
         size: state.font_size,
+        bold,
+        italic,
         source_object_ids: source_object_ids.to_vec(),
     });
     state.text_matrix = state.text_matrix.translate(advance, 0.0);
@@ -667,7 +760,7 @@ fn push_text_run(
 fn text_advance_width(
     text: &str,
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> f32 {
     let glyphs = text.chars().count() as f32;
     if glyphs == 0.0 {
@@ -690,12 +783,17 @@ fn text_advance_width(
     ((base + spacing) * state.horizontal_scaling).max(0.0)
 }
 
-fn text_run_bbox(state: &GraphicsState, advance: f32) -> BBox {
+fn text_run_bbox(state: &GraphicsState, advance: f32, ascent: f32, descent: f32) -> BBox {
+    // Vertical extent from the font's ascent/descent (em-relative to the
+    // baseline) rather than a flat font-size box, so glyph boxes are tight and
+    // baseline-correct under scaling/rotation.
+    let bottom = state.text_rise + descent * state.font_size;
+    let top = state.text_rise + ascent * state.font_size;
     let corners = [
-        (0.0, state.text_rise),
-        (advance, state.text_rise),
-        (0.0, state.text_rise + state.font_size),
-        (advance, state.text_rise + state.font_size),
+        (0.0, bottom),
+        (advance, bottom),
+        (0.0, top),
+        (advance, top),
     ];
     let points = corners
         .into_iter()
@@ -985,7 +1083,12 @@ fn is_likely_column_split_gap(left: &BBox, right: &BBox, gap: f32, x_jump: f32) 
 
 fn text_line_from_runs(runs: Vec<TextRun>) -> Option<TextLine> {
     let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
-    Some(TextLine { runs, bbox })
+    let baseline_y = runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32;
+    Some(TextLine {
+        runs,
+        bbox,
+        baseline_y,
+    })
 }
 
 fn prefers_wide_gap_before_tight_band(
@@ -1290,6 +1393,8 @@ fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> 
                         bbox: Some(run.bbox),
                         font: run.font.clone(),
                         size: Some(run.size),
+                        bold: run.bold,
+                        italic: run.italic,
                     })
                 })
                 .collect(),
@@ -1357,17 +1462,17 @@ fn dominant_baseline_y(runs: &[TextRun]) -> Option<f32> {
     let mut baselines = runs
         .iter()
         .filter(|run| run.size >= max_size * 0.8)
-        .map(|run| run.bbox.y)
+        .map(|run| run.baseline_y)
         .collect::<Vec<_>>();
     if baselines.is_empty() {
-        baselines = runs.iter().map(|run| run.bbox.y).collect();
+        baselines = runs.iter().map(|run| run.baseline_y).collect();
     }
     baselines.sort_by(|left, right| left.total_cmp(right));
     baselines.get(baselines.len() / 2).copied()
 }
 
 fn script_kind_for_run(run: &TextRun, baseline_y: f32) -> Option<ScriptKind> {
-    let delta = run.bbox.y - baseline_y;
+    let delta = run.baseline_y - baseline_y;
     let threshold = (run.size * 0.25).clamp(2.0, 4.0);
     if delta >= threshold {
         Some(ScriptKind::Superscript)
@@ -2475,8 +2580,11 @@ fn text_run_from_cell_runs(runs: &[TextRun]) -> Option<TextRun> {
     Some(TextRun {
         text,
         bbox,
+        baseline_y: runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32,
         font: runs.iter().find_map(|run| run.font.clone()),
         size: runs.iter().map(|run| run.size).sum::<f32>() / runs.len() as f32,
+        bold: !runs.is_empty() && runs.iter().all(|run| run.bold),
+        italic: !runs.is_empty() && runs.iter().all(|run| run.italic),
         source_object_ids: source_ids_for_runs(runs),
     })
 }
@@ -2791,31 +2899,71 @@ fn columns_align(first: &[TextRun], next: &[TextRun]) -> bool {
         .all(|(left, right)| (left.bbox.x - right.bbox.x).abs() <= 6.0)
 }
 
+/// Map a point from unrotated page space into the displayed (clockwise-rotated)
+/// frame for a `/Rotate` of 90/180/270 (ISO 32000-1 §7.7.3.3). Assumes the page
+/// origin is at (0, 0).
+fn rotate_point(x: f32, y: f32, rotation: i32, width: f32, height: f32) -> (f32, f32) {
+    match rotation.rem_euclid(360) {
+        90 => (y, width - x),
+        180 => (width - x, height - y),
+        270 => (height - y, x),
+        _ => (x, y),
+    }
+}
+
+/// Rotate an axis-aligned bbox into the displayed frame (90/180/270 keep it
+/// axis-aligned), recomputing width/height from the transformed corners.
+fn rotate_bbox(bbox: BBox, rotation: i32, width: f32, height: f32) -> BBox {
+    if rotation.rem_euclid(360) == 0 {
+        return bbox;
+    }
+    let (x0, y0) = rotate_point(bbox.x, bbox.y, rotation, width, height);
+    let (x1, y1) = rotate_point(bbox.x + bbox.width, bbox.y + bbox.height, rotation, width, height);
+    BBox {
+        x: x0.min(x1),
+        y: y0.min(y1),
+        width: (x1 - x0).abs(),
+        height: (y1 - y0).abs(),
+    }
+}
+
 fn group_text_runs(mut runs: Vec<TextRun>) -> Vec<TextLine> {
     runs.sort_by(|left, right| {
         right
-            .bbox
-            .y
-            .total_cmp(&left.bbox.y)
+            .baseline_y
+            .total_cmp(&left.baseline_y)
             .then(left.bbox.x.total_cmp(&right.bbox.x))
     });
 
     let mut lines: Vec<TextLine> = Vec::new();
     for run in runs {
+        // Group by text baseline, not the visual bbox top, so a smaller-font
+        // super/subscript stays on its line even though its box (ascent/descent)
+        // differs from the body text.
         if let Some(line) = lines
             .iter_mut()
-            .find(|line| (line.bbox.y - run.bbox.y).abs() <= 3.0)
+            .find(|line| (line.baseline_y - run.baseline_y).abs() <= 3.0)
         {
+            line.bbox = union_boxes([line.bbox, run.bbox]).unwrap_or(line.bbox);
+            // Drift the line anchor toward the lowest baseline, matching the old
+            // union-of-boxes behavior, so following runs match the body baseline
+            // rather than a leading super/subscript.
+            line.baseline_y = line.baseline_y.min(run.baseline_y);
             line.runs.push(run);
-            line.runs
-                .sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
-            line.bbox = union_boxes(line.runs.iter().map(|run| run.bbox)).unwrap_or(line.bbox);
         } else {
             lines.push(TextLine {
+                baseline_y: run.baseline_y,
                 bbox: run.bbox,
                 runs: vec![run],
             });
         }
+    }
+
+    // Sort each line's runs left-to-right once at the end, instead of re-sorting
+    // the whole line on every insert (which was O(k^2 log k) per line).
+    for line in &mut lines {
+        line.runs
+            .sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
     }
 
     lines
@@ -3158,7 +3306,7 @@ fn expand_object_streams(objects: &mut Vec<PdfObject>) {
     objects.extend(expanded);
 }
 
-fn page_seed(object: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> Option<PageSeed> {
+fn page_seed(object: &PdfObject, object_map: &HashMap<u32, Arc<PdfObject>>) -> Option<PageSeed> {
     let body = lossy(&object.body);
     let compact = body.split_whitespace().collect::<String>();
     if compact.contains("/Type/Page") && !compact.contains("/Type/Pages") {
@@ -3173,7 +3321,7 @@ fn page_seed(object: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> Option
 
 fn body_with_inherited_page_tree_entries(
     page_body: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> String {
     let mut body = page_body.to_owned();
     append_parent_page_tree_entries(page_body, object_map, &mut body, 0);
@@ -3182,7 +3330,7 @@ fn body_with_inherited_page_tree_entries(
 
 fn append_parent_page_tree_entries(
     body: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
     output: &mut String,
     depth: usize,
 ) {
@@ -3426,7 +3574,7 @@ fn parse_resource_refs(text: &str, key: &str) -> HashMap<String, u32> {
     parse_named_refs(dict)
 }
 
-fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, PdfObject>) -> Option<String> {
+fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> Option<String> {
     let resource_ref = parse_direct_ref_after_key(page_body, "/Resources")?;
     object_map
         .get(&(resource_ref as u32))
@@ -3435,15 +3583,20 @@ fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, PdfObject>) 
 
 fn load_font_decoders(
     resource_text: &str,
-    object_map: &HashMap<u32, PdfObject>,
-) -> HashMap<String, FontDecoder> {
+    object_map: &HashMap<u32, Arc<PdfObject>>,
+    font_cache: &HashMap<u32, Arc<FontDecoder>>,
+) -> HashMap<String, Arc<FontDecoder>> {
     resolve_named_resource_refs(resource_text, "/Font", object_map)
         .into_iter()
         .map(|(name, object_number)| {
-            let decoder = object_map
-                .get(&object_number)
-                .map(|font| font_decoder(font, object_map))
-                .unwrap_or_default();
+            let decoder = font_cache.get(&object_number).cloned().unwrap_or_else(|| {
+                Arc::new(
+                    object_map
+                        .get(&object_number)
+                        .map(|font| font_decoder(font.as_ref(), object_map))
+                        .unwrap_or_default(),
+                )
+            });
             (name, decoder)
         })
         .collect()
@@ -3452,7 +3605,7 @@ fn load_font_decoders(
 fn resolve_named_resource_refs(
     resource_text: &str,
     key: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> HashMap<String, u32> {
     let direct = parse_resource_refs(resource_text, key);
     if !direct.is_empty() {
@@ -3465,10 +3618,12 @@ fn resolve_named_resource_refs(
         .unwrap_or_default()
 }
 
-fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontDecoder {
+fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, Arc<PdfObject>>) -> FontDecoder {
     let font_body = lossy(&font.body);
     let encoding = font_encoding_differences(&font_body, object_map);
     let widths = font_widths(&font_body, &encoding);
+    let (bold, italic) = font_style(&font_body, object_map);
+    let (ascent, descent) = font_vertical_metrics(&font_body, object_map);
     let Some(to_unicode_ref) = parse_refs_after_key(&font_body, "/ToUnicode")
         .into_iter()
         .next()
@@ -3478,6 +3633,10 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             encoding,
             widths,
             max_code_len: 1,
+            bold,
+            italic,
+            ascent,
+            descent,
         };
     };
     let Some(to_unicode) = object_map.get(&(to_unicode_ref as u32)) else {
@@ -3486,21 +3645,105 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             encoding,
             widths,
             max_code_len: 1,
+            bold,
+            italic,
+            ascent,
+            descent,
         };
     };
-    let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode) else {
+    let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode.as_ref()) else {
         return FontDecoder {
             cmap: HashMap::new(),
             encoding,
             widths,
             max_code_len: 1,
+            bold,
+            italic,
+            ascent,
+            descent,
         };
     };
 
     let mut decoder = parse_to_unicode_cmap(&lossy(&cmap_stream));
     decoder.encoding = encoding;
     decoder.widths = widths;
+    decoder.bold = bold;
+    decoder.italic = italic;
+    decoder.ascent = ascent;
+    decoder.descent = descent;
     decoder
+}
+
+/// Font ascent/descent in em units (text-space fractions of the font size),
+/// from `/FontDescriptor` `/Ascent` and `/Descent` (glyph space, /1000). Falls
+/// back to typical Latin metrics when the descriptor is absent.
+fn font_vertical_metrics(font_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> (f32, f32) {
+    let mut ascent = 0.75;
+    let mut descent = -0.25;
+    if let Some(descriptor_ref) = parse_direct_ref_after_key(font_body, "/FontDescriptor") {
+        if let Some(object) = object_map.get(&(descriptor_ref as u32)) {
+            let body = lossy(&object.body);
+            if let Some(value) = parse_number_after(&body, "/Ascent") {
+                if value != 0.0 {
+                    ascent = value / 1000.0;
+                }
+            }
+            if let Some(value) = parse_number_after(&body, "/Descent") {
+                if value != 0.0 {
+                    descent = value / 1000.0;
+                }
+            }
+        }
+    }
+    (ascent, descent)
+}
+
+/// Detect bold/italic for a font from its `/BaseFont` name (after stripping the
+/// subset prefix) and, when present, its `/FontDescriptor` `/Flags` (bit 7
+/// Italic, bit 19 ForceBold) and `/ItalicAngle`.
+fn font_style(font_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> (bool, bool) {
+    let mut bold = false;
+    let mut italic = false;
+    if let Some(name) = parse_name_after(font_body, "/BaseFont") {
+        let bare = name.rsplit('+').next().unwrap_or(name.as_str()).to_ascii_lowercase();
+        bold |= ["bold", "black", "heavy", "semibold", "demibold", "-bd", "demi"]
+            .iter()
+            .any(|needle| bare.contains(needle));
+        italic |= ["italic", "oblique", "-it"]
+            .iter()
+            .any(|needle| bare.contains(needle));
+    }
+    if let Some(descriptor_ref) = parse_direct_ref_after_key(font_body, "/FontDescriptor") {
+        if let Some(object) = object_map.get(&(descriptor_ref as u32)) {
+            let body = lossy(&object.body);
+            if let Some(flags) = parse_number_after(&body, "/Flags") {
+                let flags = flags as i64;
+                italic |= flags & 64 != 0;
+                bold |= flags & 262_144 != 0;
+            }
+            if let Some(angle) = parse_number_after(&body, "/ItalicAngle") {
+                italic |= angle.abs() > f32::EPSILON;
+            }
+        }
+    }
+    (bold, italic)
+}
+
+/// Parse a PDF name value (`/Name`) following `key`.
+fn parse_name_after(text: &str, key: &str) -> Option<String> {
+    let start = text.find(key)? + key.len();
+    let rest = text[start..].trim_start();
+    let mut chars = rest.chars();
+    if chars.next()? != '/' {
+        return None;
+    }
+    let name: String = chars
+        .take_while(|character| {
+            !character.is_whitespace()
+                && !matches!(character, '/' | '[' | ']' | '<' | '>' | '(' | ')')
+        })
+        .collect();
+    (!name.is_empty()).then_some(name)
 }
 
 fn font_widths(font_body: &str, encoding: &HashMap<u8, String>) -> HashMap<char, f32> {
@@ -3530,7 +3773,7 @@ fn font_widths(font_body: &str, encoding: &HashMap<u8, String>) -> HashMap<char,
 
 fn font_encoding_differences(
     font_body: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> HashMap<u8, String> {
     if let Some(encoding_ref) = parse_direct_ref_after_key(font_body, "/Encoding") {
         if let Some(object) = object_map.get(&(encoding_ref as u32)) {
@@ -3672,6 +3915,10 @@ fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
         encoding: HashMap::new(),
         widths: HashMap::new(),
         max_code_len,
+        bold: false,
+        italic: false,
+        ascent: 0.75,
+        descent: -0.25,
     }
 }
 
@@ -3929,7 +4176,7 @@ fn parse_number_after(text: &str, key: &str) -> Option<f32> {
 fn first_text_operand(
     operands: &[Operand],
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> Option<String> {
     operands
         .first()
@@ -3939,7 +4186,7 @@ fn first_text_operand(
 fn operand_text(
     operand: &Operand,
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> Option<String> {
     match operand {
         Operand::Literal(bytes) | Operand::Hex(bytes) => Some(decode_pdf_text(
@@ -3947,7 +4194,8 @@ fn operand_text(
             state
                 .font_name
                 .as_ref()
-                .and_then(|font_name| fonts.get(font_name)),
+                .and_then(|font_name| fonts.get(font_name))
+                .map(|font| font.as_ref()),
         )),
         _ => None,
     }
@@ -3956,7 +4204,7 @@ fn operand_text(
 fn text_from_array(
     items: &[Operand],
     state: &GraphicsState,
-    fonts: &HashMap<String, FontDecoder>,
+    fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> String {
     let mut text = String::new();
     for item in items {
@@ -4294,6 +4542,7 @@ mod tests {
                 width: 360.0,
                 height: 12.0,
             },
+            baseline_y: 720.0,
         };
 
         assert_eq!(
@@ -4311,8 +4560,11 @@ mod tests {
                 width: text.len() as f32 * size * 0.4,
                 height: size,
             },
+            baseline_y: y,
             font: None,
             size,
+            bold: false,
+            italic: false,
             source_object_ids: Vec::new(),
         }
     }

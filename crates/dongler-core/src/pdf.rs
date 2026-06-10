@@ -403,6 +403,42 @@ fn extract_page(
     }
 
     warnings.append(&mut extraction.warnings);
+
+    // Apply the page /Rotate so line grouping and reading order run in the
+    // orientation a reader sees. Display dimensions swap for 90/270.
+    let normalized_rotation = rotation.map(|value| value.rem_euclid(360)).unwrap_or(0);
+    if normalized_rotation != 0 {
+        for run in &mut extraction.text_runs {
+            run.bbox = rotate_bbox(run.bbox, normalized_rotation, width, height);
+        }
+        for image in &mut extraction.images {
+            if let Some(bbox) = image.bbox {
+                image.bbox = Some(rotate_bbox(bbox, normalized_rotation, width, height));
+            }
+        }
+        for edge in &mut extraction.edges {
+            let (x0, y0) = rotate_point(edge.x0, edge.y0, normalized_rotation, width, height);
+            let (x1, y1) = rotate_point(edge.x1, edge.y1, normalized_rotation, width, height);
+            edge.x0 = x0;
+            edge.y0 = y0;
+            edge.x1 = x1;
+            edge.y1 = y1;
+        }
+    }
+    let (page_width, page_height) = if matches!(normalized_rotation, 90 | 270) {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let (page_x, page_y) = if normalized_rotation == 0 {
+        (
+            media_box.first().copied().unwrap_or(0.0),
+            media_box.get(1).copied().unwrap_or(0.0),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+
     let lines = group_text_runs(extraction.text_runs);
     let mut blocks = build_blocks(seed.number, &lines, &extraction.edges);
     if blocks.is_empty() && !extraction.images.is_empty() {
@@ -417,14 +453,14 @@ fn extract_page(
 
     let page = Page {
         number: seed.number,
-        width: Some(width),
-        height: Some(height),
+        width: Some(page_width),
+        height: Some(page_height),
         rotation,
         bbox: Some(BBox {
-            x: media_box.first().copied().unwrap_or(0.0),
-            y: media_box.get(1).copied().unwrap_or(0.0),
-            width,
-            height,
+            x: page_x,
+            y: page_y,
+            width: page_width,
+            height: page_height,
         }),
         blocks,
         images: extraction.images,
@@ -2834,6 +2870,34 @@ fn columns_align(first: &[TextRun], next: &[TextRun]) -> bool {
         .iter()
         .zip(next)
         .all(|(left, right)| (left.bbox.x - right.bbox.x).abs() <= 6.0)
+}
+
+/// Map a point from unrotated page space into the displayed (clockwise-rotated)
+/// frame for a `/Rotate` of 90/180/270 (ISO 32000-1 §7.7.3.3). Assumes the page
+/// origin is at (0, 0).
+fn rotate_point(x: f32, y: f32, rotation: i32, width: f32, height: f32) -> (f32, f32) {
+    match rotation.rem_euclid(360) {
+        90 => (y, width - x),
+        180 => (width - x, height - y),
+        270 => (height - y, x),
+        _ => (x, y),
+    }
+}
+
+/// Rotate an axis-aligned bbox into the displayed frame (90/180/270 keep it
+/// axis-aligned), recomputing width/height from the transformed corners.
+fn rotate_bbox(bbox: BBox, rotation: i32, width: f32, height: f32) -> BBox {
+    if rotation.rem_euclid(360) == 0 {
+        return bbox;
+    }
+    let (x0, y0) = rotate_point(bbox.x, bbox.y, rotation, width, height);
+    let (x1, y1) = rotate_point(bbox.x + bbox.width, bbox.y + bbox.height, rotation, width, height);
+    BBox {
+        x: x0.min(x1),
+        y: y0.min(y1),
+        width: (x1 - x0).abs(),
+        height: (y1 - y0).abs(),
+    }
 }
 
 fn group_text_runs(mut runs: Vec<TextRun>) -> Vec<TextLine> {

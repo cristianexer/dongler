@@ -543,6 +543,34 @@ fn load_path_detects_bold_and_italic_pdf_fonts() {
 }
 
 #[test]
+fn load_path_applies_pdf_page_rotation_to_geometry() {
+    let path = write_temp_bytes("rotated.pdf", rotated_page_pdf(90));
+
+    let document = load_path(&path).unwrap();
+    let page = &document.pages[0];
+
+    assert_eq!(page.rotation, Some(90));
+    // Display dimensions swap for a 90/270 rotation.
+    assert_eq!(page.width, Some(792.0));
+    assert_eq!(page.height, Some(612.0));
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(markdown.contains("Rotated heading"), "markdown: {markdown}");
+    assert!(markdown.contains("Body text below it"), "markdown: {markdown}");
+
+    for block in &page.blocks {
+        if let Block::Text(text) = block {
+            if let Some(bbox) = text.bbox {
+                assert!(
+                    bbox.x >= -1.0 && bbox.x <= 792.0 && bbox.y >= -1.0 && bbox.y <= 612.0,
+                    "bbox {bbox:?} falls outside the rotated page extent"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn load_path_decodes_ascii85_flate_pdf_streams() {
     let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
 
@@ -2640,6 +2668,16 @@ end";
     .into_bytes();
     pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
     pdf
+}
+
+fn rotated_page_pdf(rotate: i32) -> Vec<u8> {
+    pdf_fixture(
+        &format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate {rotate} /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        "BT /F1 12 Tf 72 720 Td (Rotated heading) Tj 0 -24 Td (Body text below it) Tj ET",
+        "",
+    )
 }
 
 fn bold_italic_pdf() -> Vec<u8> {

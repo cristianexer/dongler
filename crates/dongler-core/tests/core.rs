@@ -1096,6 +1096,37 @@ fn load_path_preserves_pdf_text_around_detected_tables() {
 }
 
 #[test]
+fn load_path_keeps_multi_section_statement_as_one_table() {
+    // A statement with section-header rows ("Operating activities:",
+    // "Operating expenses:") interleaved between data rows must extract as a
+    // single table spanning all sections — not fragment at each header.
+    let path = write_temp_bytes("multi-section-statement.pdf", multi_section_statement_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a single table spanning all sections");
+
+    let labels: Vec<&str> = table.rows.iter().map(|row| row[0].as_str()).collect();
+    assert!(labels.contains(&"Operating activities:"), "missing first section header: {labels:?}");
+    assert!(labels.contains(&"Operating expenses:"), "missing later section header: {labels:?}");
+    // Both a top and a bottom data row are present, so the table did not fragment.
+    let net_sales = table.rows.iter().find(|row| row[0] == "Net sales").expect("Net sales row");
+    assert_eq!(net_sales[1], "391,011");
+    let net_income = table.rows.iter().find(|row| row[0] == "Net income").expect("Net income row");
+    assert_eq!(net_income[1], "93,736");
+    assert_eq!(net_income[2], "96,995");
+    // A section header is a label-only row (its numeric columns are empty).
+    let section = table.rows.iter().find(|row| row[0] == "Operating expenses:").unwrap();
+    assert!(section[1..].iter().all(|cell| cell.is_empty()));
+}
+
+#[test]
 fn load_path_extracts_pdf_table_from_implied_word_alignment() {
     let path = write_temp_bytes("implied-alignment-table.pdf", implied_alignment_table_pdf());
 
@@ -2987,6 +3018,57 @@ fn table_with_surrounding_text_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 750 Td (Results Summary) Tj 0 -30 Td (Name) Tj 150 0 Td (Value) Tj -150 -20 Td (Alpha) Tj 150 0 Td (42) Tj -150 -20 Td (Source note) Tj ET",
+        "",
+    )
+}
+
+fn multi_section_statement_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    // Realistic Helvetica (size 10) layout: right-aligned figures in two columns,
+    // section-header rows interleaved between data rows.
+    for (text, x, y) in [
+        ("CONSOLIDATED STATEMENTS OF OPERATIONS", 90.0, 760.0),
+        ("2024", 337.8, 742.0),
+        ("2023", 437.8, 742.0),
+        ("Operating activities:", 90.0, 726.0),
+        ("Net sales", 90.0, 710.0),
+        ("391,011", 324.1, 710.0),
+        ("383,285", 424.1, 710.0),
+        ("Cost of sales", 90.0, 694.0),
+        ("210,352", 324.1, 694.0),
+        ("214,137", 424.1, 694.0),
+        ("Gross margin", 90.0, 678.0),
+        ("180,659", 324.1, 678.0),
+        ("169,148", 424.1, 678.0),
+        ("Operating expenses:", 90.0, 662.0),
+        ("Research and development", 90.0, 646.0),
+        ("31,370", 329.7, 646.0),
+        ("29,915", 429.7, 646.0),
+        ("Selling and administrative", 90.0, 630.0),
+        ("26,097", 329.7, 630.0),
+        ("24,932", 429.7, 630.0),
+        ("Total operating expenses", 90.0, 614.0),
+        ("57,467", 329.7, 614.0),
+        ("54,847", 429.7, 614.0),
+        ("Operating income", 90.0, 598.0),
+        ("123,192", 324.1, 598.0),
+        ("114,301", 424.1, 598.0),
+        ("Other income", 90.0, 582.0),
+        ("269", 343.3, 582.0),
+        ("(565)", 436.7, 582.0),
+        ("Provision for income taxes", 90.0, 566.0),
+        ("29,749", 329.7, 566.0),
+        ("16,741", 429.7, 566.0),
+        ("Net income", 90.0, 550.0),
+        ("93,736", 329.7, 550.0),
+        ("96,995", 429.7, 550.0),
+        ("See accompanying notes.", 90.0, 526.0),
+    ] {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
         "",
     )
 }

@@ -222,10 +222,10 @@ Since dongler is its own Rust engine, we adopt **techniques**, already folded in
 - ✅ **DONE** Ligature FB00–FB06 expansion at the `normalize_pdf_token` chokepoint (`expand_latin_ligatures`). Tested (`load_path_expands_pdf_unicode_ligatures`).
 - ✅ **DONE** P7: compute the `/Encrypt` scan once (was scanned twice). P6: `runs_sorted_by_x` returns a `Cow` that borrows when the line is already x-sorted (the common case out of `group_text_runs`), eliminating the deep `Vec<TextRun>` clone+sort at the three column/word sites (`split_text_line_at_wide_gap`, `has_repeated_tight_column_band_evidence`, `text_from_line_runs`). Output is identical (verified by the 102 core tests).
 
-**Phase 1 — accuracy core (1–2 weeks):**
-- Doc-level font cache (P1) + `Arc<PdfObject>` (P3) + `group_text_runs` bucketing (P2).
-- Font-size heading detection + bold/italic flags (4.3/4.4) and span-aware Markdown renderer (4.7).
-- Apply `/Rotate` (4.6); font-metric bboxes (4.8).
+**Phase 1 — accuracy core ✅ DONE (PR #3):**
+- ✅ Doc-level font cache (P1) + `Arc<PdfObject>` (P3) + `group_text_runs` de-quadratic (P2).
+- ✅ Font-size heading detection (Phase 0) + bold/italic flags (4.4) and span-aware Markdown renderer (4.7).
+- ✅ Apply `/Rotate` (4.6); font-metric bboxes (4.8, baseline-decoupled from layout heuristics).
 
 **Phase 2 — reading order & tables (2–3 weeks):**
 - XY-cut reading order (4.1); pdfplumber-style table recall + spanning cells (§6).

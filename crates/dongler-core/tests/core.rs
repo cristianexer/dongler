@@ -1135,6 +1135,33 @@ fn load_path_keeps_multi_section_statement_as_one_table() {
 }
 
 #[test]
+fn load_path_extracts_wide_numeric_table_without_section_headers() {
+    // A wide table (>= 5 numeric columns: segment/geography breakdown) has no
+    // section-header rows, so the multi-section path does not apply — but the
+    // exact/implied detectors cannot assemble it either. The columnar detector
+    // takes it on the strength of its column count alone.
+    let path = write_temp_bytes("wide-table.pdf", wide_numeric_table_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a wide columnar table");
+
+    assert!(table.headers.len() >= 6, "expected >= 6 columns, got {}", table.headers.len());
+    let north = table.rows.iter().find(|row| row[0] == "North America").expect("North America row");
+    assert_eq!(north[1], "4,200");
+    assert_eq!(north[6], "6,500");
+    let total = table.rows.iter().find(|row| row[0] == "Total").expect("Total row");
+    assert_eq!(total[1], "12,000");
+    assert_eq!(total[6], "19,970");
+}
+
+#[test]
 fn load_path_merges_wrapped_row_label_into_one_row() {
     // A long row label that wrapped onto a previous line ("… beginning of" /
     // "period 12,345 …") must merge back into the figure row, and a section header
@@ -3102,6 +3129,68 @@ fn wrapped_label_statement_pdf() -> Vec<u8> {
         ("See notes.", 90.0, 536.0),
     ] {
         ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn wide_numeric_table_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        ("Segment revenue (in millions)", 70.0, 752.0),
+        ("2024", 210.0, 738.0),
+        ("2024", 270.0, 738.0),
+        ("2024", 330.0, 738.0),
+        ("2024", 390.0, 738.0),
+        ("2024", 450.0, 738.0),
+        ("2024", 520.0, 738.0),
+        ("North America", 70.0, 722.0),
+        ("4,200", 207.7, 722.0),
+        ("1,100", 267.7, 722.0),
+        ("300", 335.0, 722.0),
+        ("500", 395.0, 722.0),
+        ("900", 455.0, 722.0),
+        ("6,500", 517.7, 722.0),
+        ("Europe", 70.0, 707.0),
+        ("3,100", 207.7, 707.0),
+        ("800", 275.0, 707.0),
+        ("210", 335.0, 707.0),
+        ("150", 395.0, 707.0),
+        ("600", 455.0, 707.0),
+        ("4,650", 517.7, 707.0),
+        ("Asia Pacific", 70.0, 692.0),
+        ("2,700", 207.7, 692.0),
+        ("950", 275.0, 692.0),
+        ("220", 335.0, 692.0),
+        ("90", 400.0, 692.0),
+        ("400", 455.0, 692.0),
+        ("3,960", 517.7, 692.0),
+        ("Latin America", 70.0, 677.0),
+        ("1,200", 207.7, 677.0),
+        ("300", 275.0, 677.0),
+        ("80", 340.0, 677.0),
+        ("60", 400.0, 677.0),
+        ("150", 455.0, 677.0),
+        ("1,730", 517.7, 677.0),
+        ("Middle East", 70.0, 662.0),
+        ("800", 215.0, 662.0),
+        ("200", 275.0, 662.0),
+        ("70", 340.0, 662.0),
+        ("40", 400.0, 662.0),
+        ("90", 460.0, 662.0),
+        ("1,130", 517.7, 662.0),
+        ("Total", 70.0, 647.0),
+        ("12,000", 202.7, 647.0),
+        ("3,350", 267.7, 647.0),
+        ("880", 335.0, 647.0),
+        ("840", 395.0, 647.0),
+        ("2,140", 447.7, 647.0),
+        ("19,970", 512.7, 647.0),
+    ] {
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
     }
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",

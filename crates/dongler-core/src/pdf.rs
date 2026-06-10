@@ -2324,15 +2324,17 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
         .map(|line| coalesce_currency_prefixes(implied_table_cells(line)))
         .collect();
 
-    // Right edges of numeric cells, but only from lines that already look like data
-    // rows (>= 2 numeric cells), so prose with an incidental figure does not vote.
+    // Right edges of value cells (figures *and* dash placeholders), from lines that
+    // already look like data rows (>= 2 value cells), so prose with an incidental
+    // figure does not vote. Counting "—" placeholders lets a sparse column — common
+    // in wide segment/equity tables where most rows are blank — still be detected.
     let mut right_edges: Vec<f32> = Vec::new();
     let mut data_rows = 0usize;
     for cells in &line_cells {
-        let numeric = cells.iter().filter(|cell| is_numeric_value(&cell.text)).count();
-        if numeric >= 2 {
+        let values = cells.iter().filter(|cell| is_value_cell(&cell.text)).count();
+        if values >= 2 {
             data_rows += 1;
-            for cell in cells.iter().filter(|cell| is_numeric_value(&cell.text)) {
+            for cell in cells.iter().filter(|cell| is_value_cell(&cell.text)) {
                 right_edges.push(cell.bbox.x + cell.bbox.width);
             }
         }
@@ -2341,7 +2343,7 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
         return None;
     }
 
-    let min_support = ((data_rows as f32) * 0.5).ceil().max(3.0) as usize;
+    let min_support = ((data_rows as f32) * 0.35).ceil().max(3.0) as usize;
     let columns = cluster_column_right_edges(&right_edges, 8.0, min_support);
     if columns.len() < 2 {
         return None;
@@ -2362,7 +2364,7 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
         .filter(|&index| {
             line_cells[index]
                 .iter()
-                .filter(|cell| is_numeric_value(&cell.text))
+                .filter(|cell| is_value_cell(&cell.text))
                 .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some())
         })
         .collect();
@@ -2378,8 +2380,8 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
         let cells = &line_cells[index];
         let aligned_here = cells
             .iter()
-            .filter(|cell| is_numeric_value(&cell.text))
-            .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some());
+                .filter(|cell| is_value_cell(&cell.text))
+                .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some());
         let numeric_here = cells.iter().any(|cell| is_numeric_value(&cell.text));
         let label_only = !numeric_here && line.bbox.x <= table_right;
         if !aligned_here && !label_only {
@@ -2398,7 +2400,7 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
         .filter(|&&index| {
             line_cells[index]
                 .iter()
-                .filter(|cell| is_numeric_value(&cell.text))
+                .filter(|cell| is_value_cell(&cell.text))
                 .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some())
         })
         .count();
@@ -2468,6 +2470,13 @@ fn is_numeric_value(text: &str) -> bool {
         }
     }
     digits >= 1
+}
+
+/// A cell that occupies a value column — a figure or a dash placeholder ("—",
+/// the financial "zero/none"). Used for column detection so a column that is
+/// mostly blank still registers.
+fn is_value_cell(text: &str) -> bool {
+    is_numeric_value(text) || matches!(text.trim(), "—" | "–")
 }
 
 /// Cluster right-edge x positions into columns: sort, split where consecutive
@@ -2735,7 +2744,15 @@ fn build_columnar_table(
         .iter()
         .filter(|row| row[1..].iter().any(|cell| !cell.trim().is_empty()))
         .count();
-    if value_rows < 8 || label_only_rows < 2 || data_with_figures < 6 {
+    // Take over from the simpler detectors only where this method earns its keep.
+    // Two cases qualify: a multi-section statement (section-header rows interleaved
+    // with data, which fragments the other detectors), or a genuinely wide table
+    // (>= 5 numeric columns — segment, equity, geography breakdowns) that the
+    // exact/implied detectors cannot assemble at all. A small uniform grid is left
+    // to those detectors so we do not merely re-shape what they already get right.
+    let multi_section = label_only_rows >= 2 && value_rows >= 8;
+    let wide_table = columns.len() >= 5 && value_rows >= 6;
+    if data_with_figures < 6 || !(multi_section || wide_table) {
         return None;
     }
 

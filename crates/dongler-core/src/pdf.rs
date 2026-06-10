@@ -1312,14 +1312,10 @@ fn is_likely_page_number_line(line: &TextLine) -> bool {
 }
 
 fn text_line_plain_text(line: &TextLine) -> String {
-    line.runs
-        .iter()
-        .map(|run| run.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_owned()
+    // Geometry-aware join so callers (table-label checks, wrapped-label detection,
+    // header assembly) see real words rather than the letter-spaced output the old
+    // `trim().join(" ")` produced on glyph-by-glyph PDFs.
+    join_runs_spaced(&runs_sorted_by_x(line)).trim().to_owned()
 }
 
 fn dedupe_indices(indices: &mut Vec<usize>) {
@@ -2524,6 +2520,62 @@ fn column_cell_width(line_cells: &[Vec<TextRun>], first_column: f32) -> f32 {
     sorted[sorted.len() / 2].max(20.0)
 }
 
+/// Label-only continuation lines directly above a data row that wrap its label —
+/// a long row label that overflowed onto the previous line(s). A continuation sits
+/// at the same left indent, carries no figures, and does not end in ":" (which
+/// marks a section header, not a wrap). Returned top-to-bottom so the text can
+/// prefix the row's own label.
+fn wrapped_label_above(
+    lines: &[TextLine],
+    line_cells: &[Vec<TextRun>],
+    row_index: usize,
+    first_column_left: f32,
+    used: &[usize],
+) -> Vec<usize> {
+    let label_x = lines[row_index].bbox.x;
+    let line_height = average_run_size(&lines[row_index]).max(lines[row_index].bbox.height);
+    let mut result: Vec<usize> = Vec::new();
+    let mut current_y = lines[row_index].bbox.y;
+    loop {
+        let above = (0..lines.len())
+            .filter(|&index| {
+                index != row_index
+                    && !used.contains(&index)
+                    && !result.contains(&index)
+                    && lines[index].bbox.y > current_y
+            })
+            .min_by(|&left, &right| lines[left].bbox.y.total_cmp(&lines[right].bbox.y));
+        let Some(above) = above else { break };
+        let line = &lines[above];
+        let text = text_line_plain_text(line);
+        // A wrapped label line: vertically adjacent, roughly the same indent
+        // (continuations are often hanging-indented), no figures, no trailing ":",
+        // and — crucially — long. A label wraps because it ran the width of the
+        // label column, which distinguishes it from a short section header like
+        // "Assets" or a one-word heading.
+        let long_enough = text.chars().count() >= 28
+            || line.bbox.x + line.bbox.width >= first_column_left - 12.0;
+        // An all-caps line is a section heading ("CASH FLOWS FROM FINANCING
+        // ACTIVITIES"), not a wrapped sentence fragment, even when it is long.
+        let all_caps_heading = text.chars().any(char::is_alphabetic)
+            && text.chars().filter(|c| c.is_alphabetic()).all(char::is_uppercase);
+        if line.bbox.y - current_y > line_height * 1.8
+            || (line.bbox.x - label_x).abs() > 16.0
+            || !long_enough
+            || all_caps_heading
+            || text.trim().is_empty()
+            || text.trim_end().ends_with(':')
+            || line_cells[above].iter().any(|cell| is_numeric_value(&cell.text))
+        {
+            break;
+        }
+        result.push(above);
+        current_y = line.bbox.y;
+    }
+    result.reverse();
+    result
+}
+
 fn build_columnar_table(
     page_number: usize,
     lines: &[TextLine],
@@ -2588,8 +2640,48 @@ fn build_columnar_table(
         }
     }
 
+    // Pull a wrapped label up into the data row it belongs to: a long row label
+    // can overflow onto the previous line, leaving the figure row with only the
+    // label's tail ("balances" instead of "Cash …, beginning balances").
+    let mut consumed: Vec<usize> = Vec::new();
+    let mut prefixes: Vec<(usize, String)> = Vec::new();
     for &index in &row_indices[data_start..] {
-        let row = assign_row(index);
+        if !line_cells[index].iter().any(|cell| is_numeric_value(&cell.text)) {
+            continue;
+        }
+        // Only a *short tail* row pulls a wrap up: "balances", "equivalents". A row
+        // that already carries a full label ("Net earnings", "Additions to …") is a
+        // section's own item, and the long line above it is that section's heading,
+        // not a wrap — merging there would corrupt the table.
+        if assign_row(index)[0].trim().chars().count() > 11 {
+            continue;
+        }
+        let mut search_used = header_indices.clone();
+        search_used.extend_from_slice(&consumed);
+        let chain = wrapped_label_above(lines, line_cells, index, first_column_left, &search_used);
+        if !chain.is_empty() {
+            let prefix = chain
+                .iter()
+                .map(|&line| text_line_plain_text(&lines[line]))
+                .collect::<Vec<_>>()
+                .join(" ");
+            prefixes.push((index, prefix));
+            consumed.extend(chain);
+        }
+    }
+
+    for &index in &row_indices[data_start..] {
+        if consumed.contains(&index) {
+            continue;
+        }
+        let mut row = assign_row(index);
+        if let Some((_, prefix)) = prefixes.iter().find(|(line, _)| *line == index) {
+            row[0] = if row[0].trim().is_empty() {
+                prefix.clone()
+            } else {
+                format!("{prefix} {}", row[0])
+            };
+        }
         if row.iter().all(|cell| cell.is_empty()) {
             continue;
         }
@@ -2623,6 +2715,7 @@ fn build_columnar_table(
 
     let mut line_index_set: Vec<usize> = row_indices.to_vec();
     line_index_set.extend(header_indices.iter().copied());
+    line_index_set.extend(consumed.iter().copied());
     line_index_set.sort_unstable();
     line_index_set.dedup();
     let bbox = union_boxes(line_index_set.iter().map(|&index| lines[index].bbox))?;

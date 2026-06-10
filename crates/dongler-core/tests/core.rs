@@ -1127,6 +1127,37 @@ fn load_path_keeps_multi_section_statement_as_one_table() {
 }
 
 #[test]
+fn load_path_merges_wrapped_row_label_into_one_row() {
+    // A long row label that wrapped onto a previous line ("… beginning of" /
+    // "period 12,345 …") must merge back into the figure row, and a section header
+    // above an item must NOT be swallowed.
+    let path = write_temp_bytes("wrapped-label.pdf", wrapped_label_statement_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a single statement table");
+
+    let labels: Vec<&str> = table.rows.iter().map(|row| row[0].as_str()).collect();
+    assert!(
+        labels.contains(&"Cash and cash equivalents and restricted cash, beginning of period"),
+        "wrapped label was not merged: {labels:?}"
+    );
+    // The wrap continuation is not left as its own stray row.
+    assert!(!labels.iter().any(|label| *label == "period"), "stray wrap tail row: {labels:?}");
+    // The section header keeps its own label-only row (not merged into an item).
+    let operating = table.rows.iter().find(|row| row[0] == "Operating activities:").unwrap();
+    assert!(operating[1..].iter().all(|cell| cell.is_empty()));
+    let net_income = table.rows.iter().find(|row| row[0] == "Net income").expect("Net income row");
+    assert_eq!(net_income[1], "5,000");
+}
+
+#[test]
 fn load_path_extracts_pdf_table_from_implied_word_alignment() {
     let path = write_temp_bytes("implied-alignment-table.pdf", implied_alignment_table_pdf());
 
@@ -3018,6 +3049,55 @@ fn table_with_surrounding_text_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 750 Td (Results Summary) Tj 0 -30 Td (Name) Tj 150 0 Td (Value) Tj -150 -20 Td (Alpha) Tj 150 0 Td (42) Tj -150 -20 Td (Source note) Tj ET",
+        "",
+    )
+}
+
+fn wrapped_label_statement_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    // The opening row's label wraps: a long first line with no figures, then a
+    // short tail ("period") that carries the figures, hanging-indented.
+    for (text, x, y) in [
+        ("STATEMENTS OF CASH FLOWS", 90.0, 760.0),
+        ("2024", 337.8, 742.0),
+        ("2023", 437.8, 742.0),
+        ("Cash and cash equivalents and restricted cash, beginning of", 90.0, 726.0),
+        ("period", 98.0, 712.0),
+        ("12,345", 329.7, 712.0),
+        ("11,000", 429.7, 712.0),
+        ("Operating activities:", 90.0, 696.0),
+        ("Net income", 98.0, 680.0),
+        ("5,000", 335.3, 680.0),
+        ("4,800", 435.3, 680.0),
+        ("Depreciation", 98.0, 664.0),
+        ("1,200", 335.3, 664.0),
+        ("1,150", 435.3, 664.0),
+        ("Deferred taxes", 98.0, 648.0),
+        ("300", 343.3, 648.0),
+        ("250", 443.3, 648.0),
+        ("Inventories", 98.0, 632.0),
+        ("(400)", 336.7, 632.0),
+        ("150", 443.3, 632.0),
+        ("Accounts payable", 98.0, 616.0),
+        ("600", 343.3, 616.0),
+        ("(200)", 436.7, 616.0),
+        ("Investing activities:", 90.0, 600.0),
+        ("Capital expenditures", 98.0, 584.0),
+        ("(2,000)", 328.6, 584.0),
+        ("(1,800)", 428.6, 584.0),
+        ("Acquisitions", 98.0, 568.0),
+        ("(500)", 336.7, 568.0),
+        ("(300)", 436.7, 568.0),
+        ("Net income", 98.0, 552.0),
+        ("5,000", 335.3, 552.0),
+        ("4,800", 435.3, 552.0),
+        ("See notes.", 90.0, 536.0),
+    ] {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
         "",
     )
 }

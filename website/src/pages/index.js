@@ -1,22 +1,32 @@
+import { useEffect, useRef, useState } from "react";
 import Heading from "@theme/Heading";
 import Head from "@docusaurus/Head";
 import Link from "@docusaurus/Link";
 import Layout from "@theme/Layout";
+import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
+  faArrowRight,
   faBolt,
+  faChartLine,
   faCode,
-  faFilePdf,
+  faDiagramProject,
+  faGaugeHigh,
   faLayerGroup,
+  faLock,
+  faMicrochip,
+  faRulerCombined,
   faTableCells,
   faTerminal,
 } from "@fortawesome/free-solid-svg-icons";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/atom-one-dark.css";
 
 import styles from "./index.module.css";
 
 const siteUrl = "https://cristianexer.github.io/dongler";
 const seoDescription =
-  "Dongler is a fast Rust-native PDF and document extraction package for developers. Parse PDFs and documents into Markdown, LaTeX, and JSON from Python, TypeScript, Rust, or the CLI.";
+  "Dongler is a fast, Rust-native document extraction engine. Parse PDFs and 15+ formats into Markdown, LaTeX, and JSON locally — from Python, TypeScript, Rust, or the CLI.";
 const seoKeywords = [
   "PDF parser",
   "PDF to Markdown",
@@ -38,100 +48,249 @@ const softwareSchema = {
   url: siteUrl,
   codeRepository: "https://github.com/cristianexer/dongler",
   license: "https://github.com/cristianexer/dongler/blob/main/LICENSE",
-  author: {
-    "@type": "Person",
-    name: "Daniel Fat",
-  },
+  author: { "@type": "Person", name: "Daniel Fat" },
   programmingLanguage: ["Rust", "Python", "TypeScript"],
-  offers: {
-    "@type": "Offer",
-    price: "0",
-    priceCurrency: "USD",
-  },
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
 };
 
-const features = [
+const languages = [
   {
-    icon: faFilePdf,
-    title: "PDF to Markdown in one call",
-    body: "Load a PDF path and render Markdown, LaTeX, or JSON from the same document object.",
+    id: "python",
+    label: "Python",
+    hl: "python",
+    install: "pip install dongler",
+    code: `import dongler
+
+doc = dongler.load("report.pdf")
+print(doc.to_markdown())`,
   },
   {
-    icon: faBolt,
-    title: "Native speed, local runtime",
-    body: "A Rust core does the extraction locally, with no hosted service or model dependency in the default path.",
+    id: "typescript",
+    label: "TypeScript",
+    hl: "typescript",
+    install: "npm install @cristianexer/dongler",
+    code: `import { load } from "@cristianexer/dongler";
+
+const doc = load("report.pdf");
+console.log(doc.toMarkdown());`,
   },
+  {
+    id: "rust",
+    label: "Rust",
+    hl: "rust",
+    install: "cargo add dongler-core",
+    code: `use dongler_core::load_path;
+
+let doc = load_path("report.pdf")?;
+println!("{}", doc.to_markdown()?);`,
+  },
+  {
+    id: "cli",
+    label: "CLI",
+    hl: "bash",
+    install: "cargo install dongler",
+    code: `$ dongler extract report.pdf --format markdown
+# → clean Markdown, streamed to stdout
+
+$ dongler extract report.pdf --format json`,
+  },
+];
+
+function highlight(code, language) {
+  try {
+    return hljs.highlight(code, { language }).value;
+  } catch (error) {
+    return code;
+  }
+}
+
+function Counter({ value }) {
+  const match = String(value).match(/^(\d+)(.*)$/);
+  const target = match ? parseInt(match[1], 10) : 0;
+  const suffix = match ? match[2] : String(value);
+  const [shown, setShown] = useState(target);
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || target === 0 || typeof IntersectionObserver === "undefined") return;
+    let raf = 0;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0].isIntersecting) return;
+        io.disconnect();
+        const duration = 1100;
+        const start = performance.now();
+        const tick = (now) => {
+          const p = Math.min(1, (now - start) / duration);
+          const eased = 1 - Math.pow(1 - p, 3);
+          setShown(Math.round(target * eased));
+          if (p < 1) raf = requestAnimationFrame(tick);
+        };
+        setShown(0);
+        raf = requestAnimationFrame(tick);
+      },
+      { threshold: 0.5 },
+    );
+    io.observe(el);
+    return () => {
+      io.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, [target]);
+  return (
+    <span ref={ref}>
+      {shown}
+      {suffix}
+    </span>
+  );
+}
+
+const stats = [
+  { value: "90+", label: "pages / second", sub: "release build, single core" },
+  { value: "15+", label: "input formats", sub: "PDF, Office, web, email" },
+  { value: "4", label: "languages", sub: "Python · TS · Rust · CLI" },
+  { value: "0", label: "cloud calls", sub: "fully local & deterministic" },
+];
+
+const formats = [
+  "PDF",
+  "DOCX",
+  "XLSX",
+  "PPTX",
+  "ODT",
+  "ODS",
+  "ODP",
+  "HTML",
+  "XML",
+  "EML",
+  "Markdown",
+  "TeX",
+  "CSV",
+  "TSV",
+  "JSON",
+  "JSONL",
+];
+
+const pipeline = [
   {
     icon: faLayerGroup,
-    title: "Same API across stacks",
-    body: "Use the CLI, Python, TypeScript, or Rust API without changing the extraction model.",
+    title: "Any document",
+    body: "PDF and 15+ formats — born-digital or messy.",
+  },
+  {
+    icon: faMicrochip,
+    title: "Dongler engine",
+    body: "Parse · font metrics · reading order · tables.",
+  },
+  {
+    icon: faCode,
+    title: "Structured output",
+    body: "Markdown, LaTeX, or a typed JSON document.",
+  },
+];
+
+const engine = [
+  {
+    icon: faMicrochip,
+    title: "A custom parser, not a wrapper",
+    body: "A from-scratch Rust PDF engine with its own tokenizer, font decoding, and CMap/ToUnicode handling — no pdfium, no poppler, no native bindings.",
+  },
+  {
+    icon: faRulerCombined,
+    title: "Font-metric bounding boxes",
+    body: "Glyph boxes derived from real font ascent/descent and the text matrix, rotation-aware, so geometry stays tight under scaling and /Rotate.",
+  },
+  {
+    icon: faDiagramProject,
+    title: "Reading-order reconstruction",
+    body: "Multi-column layouts are detected and re-sequenced into natural reading order instead of raw stream order.",
   },
   {
     icon: faTableCells,
-    title: "Tables and structure",
-    body: "Extract page blocks, simple tables, metadata, source anchors, images, and warnings for downstream code.",
+    title: "Table structure with spans",
+    body: "Ruled, aligned, and implied tables are recovered into a real cell grid — including merged column headers.",
   },
   {
-    icon: faTerminal,
-    title: "Pipeline-friendly errors",
-    body: "Batch APIs return one result per file, so unsupported documents do not stop the whole job.",
+    icon: faChartLine,
+    title: "Benchmarked, not hand-waved",
+    body: "Accuracy is measured with TEDS, GriTS, CER/WER, edit-similarity, and bbox IoU across a 1,400-PDF benchmark suite.",
   },
   {
-    icon: faCode,
-    title: "Developer-first output",
-    body: "Markdown for RAG and review, LaTeX for technical documents, JSON when you need the full IR.",
+    icon: faLock,
+    title: "Local & deterministic",
+    body: "No hosted service, API key, or model dependency in the default path. The same input always yields the same structured output.",
   },
 ];
 
-const docsPreview = [
-  {
-    title: "Quick start",
-    to: "/docs/quickstart",
-    body: "Install Dongler and parse your first PDF in Python, TypeScript, Rust, or the CLI.",
-  },
-  {
-    title: "Developer guide",
-    to: "/docs/developer-guide",
-    body: "Choose the right runtime, handle errors, batch files, and inspect the document object.",
-  },
-  {
-    title: "API",
-    to: "/docs/api",
-    body: "Reference the object API, batch results, renderers, and document IR fields.",
-  },
+const languageCards = [
+  { label: "Python", icon: faCode, install: "pip install dongler", note: "Ingestion jobs & notebooks" },
+  { label: "TypeScript", icon: faLayerGroup, install: "npm install @cristianexer/dongler", note: "Services & queues" },
+  { label: "Rust", icon: faBolt, install: "cargo add dongler-core", note: "The core API, directly" },
+  { label: "CLI", icon: faTerminal, install: "cargo install dongler", note: "Inspect & pipe anywhere" },
 ];
 
-const packageLinks = [
-  {
-    icon: faCode,
-    label: "PyPI",
-    href: "https://pypi.org/project/dongler/",
-    command: "pip install dongler",
-  },
-  {
-    icon: faTerminal,
-    label: "crates.io",
-    href: "https://crates.io/crates/dongler",
-    command: "cargo install dongler",
-  },
-  {
-    icon: faLayerGroup,
-    label: "npm",
-    href: "https://www.npmjs.com/package/@cristianexer/dongler",
-    command: "npm install @cristianexer/dongler",
-  },
-];
+function LanguageSwitcher() {
+  const [active, setActive] = useState("python");
+  const current = languages.find((l) => l.id === active) ?? languages[0];
+  return (
+    <div className={styles.codeCard}>
+      <div className={styles.codeTabs} role="tablist" aria-label="Language">
+        {languages.map((lang) => (
+          <button
+            key={lang.id}
+            type="button"
+            role="tab"
+            aria-selected={lang.id === active}
+            className={lang.id === active ? styles.codeTabActive : styles.codeTab}
+            onClick={() => setActive(lang.id)}
+          >
+            {lang.label}
+          </button>
+        ))}
+      </div>
+      <pre className={styles.codeBody}>
+        <code
+          className={`hljs language-${current.hl}`}
+          dangerouslySetInnerHTML={{ __html: highlight(current.code, current.hl) }}
+        />
+      </pre>
+      <div className={styles.codeFoot}>
+        <span className={styles.codeDot} aria-hidden="true" />
+        <code>{current.install}</code>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
+  const { siteConfig } = useDocusaurusContext();
+  const version = siteConfig.customFields?.donglerVersion;
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    document.documentElement.classList.add("dg-reveal-ready");
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            io.unobserve(entry.target);
+          }
+        });
+      },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
+    );
+    document.querySelectorAll(".dg-reveal").forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
   return (
     <Layout
-      title="Fast PDF parsing to Markdown, LaTeX, and JSON"
+      title="Fast, Rust-native document extraction"
       description={seoDescription}
     >
       <Head>
         <link rel="canonical" href={`${siteUrl}/`} />
         <meta name="keywords" content={seoKeywords.join(", ")} />
-        <meta property="og:title" content="Dongler: fast PDF parsing to Markdown, LaTeX, and JSON" />
+        <meta property="og:title" content="Dongler: fast, Rust-native document extraction" />
         <meta property="og:description" content={seoDescription} />
         <meta property="og:url" content={`${siteUrl}/`} />
         <meta property="og:type" content="website" />
@@ -139,126 +298,139 @@ export default function Home() {
         <meta name="twitter:card" content="summary_large_image" />
         <script type="application/ld+json">{JSON.stringify(softwareSchema)}</script>
       </Head>
-      <main>
+      <main className={styles.page}>
+        {/* ---------------------------------------------------------- hero */}
         <section className={styles.hero}>
+          <div className={styles.heroGlow} aria-hidden="true" />
           <div className={styles.heroInner}>
             <div className={styles.heroCopy}>
-              <p className={styles.brandWord}>Dongler</p>
+              <span className={styles.eyebrow}>
+                <span className={styles.eyebrowDot} aria-hidden="true" />
+                Rust-native document engine
+                {version ? <em>v{version}</em> : null}
+              </span>
               <Heading as="h1" className={styles.heroTitle}>
-                Fast PDF parsing to clean <span>Markdown</span>.
+                Documents in.
+                <br />
+                <span>Structure out.</span>
               </Heading>
               <p className={styles.heroText}>
-                Parse PDFs and other documents into Markdown, LaTeX, or JSON
-                with a local Rust engine and simple bindings for Python,
-                TypeScript, Rust, and the CLI.
+                Dongler is a from-scratch Rust engine that turns PDFs and 15+
+                formats into clean Markdown, LaTeX, and typed JSON — locally, in
+                milliseconds, from Python, TypeScript, Rust, or the CLI.
               </p>
               <div className={styles.actions}>
-                <Link className="button button--secondary button--lg" to="/docs/quickstart">
-                  Quick start <span aria-hidden="true">-&gt;</span>
+                <Link className="button button--primary button--lg" to="/docs/quickstart">
+                  Get started{" "}
+                  <FontAwesomeIcon icon={faArrowRight} className={styles.btnIcon} />
                 </Link>
-                <Link className="button button--primary button--lg" to="/docs/developer-guide">
-                  Developer guide <span aria-hidden="true">-&gt;</span>
+                <Link
+                  className="button button--secondary button--lg"
+                  href="https://github.com/cristianexer/dongler"
+                >
+                  View on GitHub
                 </Link>
               </div>
-              <div className={styles.commandRow} aria-label="Install commands">
-                <code>pip install dongler</code>
-                <code>npm install @cristianexer/dongler</code>
-                <code>cargo install dongler</code>
-              </div>
+              <dl className={styles.heroStats}>
+                {stats.map((s) => (
+                  <div key={s.label} className={styles.heroStat}>
+                    <dt>{s.value}</dt>
+                    <dd>{s.label}</dd>
+                  </div>
+                ))}
+              </dl>
             </div>
-
-            <div className={styles.previewPanel} aria-label="Markdown output preview">
-              <div className={styles.panelBar}>
-                <span>report.pdf</span>
-                <span aria-hidden="true">-&gt;</span>
-                <span>Document object</span>
-                <span aria-hidden="true">-&gt;</span>
-                <strong>Output</strong>
-              </div>
-              <div className={styles.panelTabs} aria-label="Output formats">
-                <span className={styles.activeTab}>Markdown</span>
-                <span>LaTeX</span>
-              </div>
-              <div className={styles.panelBody}>
-                <pre className={styles.markdownSample}>
-{`import dongler
-
-doc = dongler.load("report.pdf")
-markdown = doc.to_markdown()
-data = doc.to_dict()
-
-# Extracted Markdown
-
-## Capital adequacy by class
-
-| Class | Requirement | Available |
-| --- | --- | --- |
-| A | 12.4M | 16.6M |`}
-                </pre>
-                <div className={styles.documentPreview}>
-                  <h2>Extracted Markdown</h2>
-                  <h3>Capital adequacy by class</h3>
-                  <p>
-                    Parsed from a PDF into a structured document object and
-                    rendered as Markdown.
-                  </p>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Class</th>
-                        <th>Requirement</th>
-                        <th>Available</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>A</td>
-                        <td>12.4M</td>
-                        <td>16.6M</td>
-                      </tr>
-                      <tr>
-                        <td>B</td>
-                        <td>18%</td>
-                        <td>24%</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            <div className={styles.heroPanel}>
+              <LanguageSwitcher />
+              <p className={styles.heroPanelNote}>
+                <FontAwesomeIcon icon={faGaugeHigh} aria-hidden="true" /> One API,
+                identical output across every binding.
+              </p>
             </div>
           </div>
         </section>
 
-        <section className={styles.packageBand} aria-label="Package links">
-          <div className={styles.packageInner}>
-            {packageLinks.map((item) => (
-              <a className={styles.packageLink} href={item.href} key={item.label}>
-                <span className={styles.packageIcon} aria-hidden="true">
-                  <FontAwesomeIcon icon={item.icon} />
-                </span>
-                <span>
-                  <strong>{item.label}</strong>
-                  <code>{item.command}</code>
-                </span>
-              </a>
+        {/* ------------------------------------------------------- marquee */}
+        <section className={styles.marqueeWrap} aria-label="Supported input formats">
+          <div className={styles.marqueeFade} />
+          <div className={styles.marquee}>
+            {[...formats, ...formats].map((fmt, i) => (
+              <span className={styles.chip} key={`${fmt}-${i}`}>
+                {fmt}
+              </span>
             ))}
           </div>
         </section>
 
-        <section className={styles.featureBand} aria-labelledby="workloads">
-          <div className={styles.featureIntro}>
-            <Heading as="h2" id="workloads">
-              Built for document pipelines that need useful output quickly.
-            </Heading>
+        {/* --------------------------------------------------------- stats */}
+        <section className={styles.statsBand} aria-label="At a glance">
+          <div className={styles.statsInner}>
+            {stats.map((s, i) => (
+              <div
+                key={s.label}
+                className={`${styles.statBox} dg-reveal`}
+                style={{ transitionDelay: `${i * 70}ms` }}
+              >
+                <div className={styles.statValue}>
+                  <Counter value={s.value} />
+                </div>
+                <div className={styles.statLabel}>{s.label}</div>
+                <div className={styles.statSub}>{s.sub}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ------------------------------------------------------ pipeline */}
+        <section className={styles.band}>
+          <div className={`${styles.sectionHead} dg-reveal`}>
+            <span className={styles.kicker}>How it works</span>
+            <Heading as="h2">One path, document to structure.</Heading>
             <p>
-              Start with the common case: a developer has a PDF path and needs
-              Markdown, LaTeX, or JSON without wiring together a stack of tools.
+              Load a path once. The engine parses, lays out, and structures the
+              document, then renders it in the format your pipeline needs.
             </p>
           </div>
-          <div className={styles.featureGrid}>
-            {features.map((item) => (
-              <article className={styles.featureItem} key={item.title}>
-                <span className={styles.featureIcon} aria-hidden="true">
+          <div className={styles.pipeline}>
+            {pipeline.map((step, i) => (
+              <div
+                className={`${styles.pipeStep} dg-reveal`}
+                style={{ transitionDelay: `${i * 90}ms` }}
+                key={step.title}
+              >
+                <span className={styles.pipeIcon} aria-hidden="true">
+                  <FontAwesomeIcon icon={step.icon} />
+                </span>
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+                {i < pipeline.length - 1 ? (
+                  <span className={styles.pipeArrow} aria-hidden="true">
+                    <FontAwesomeIcon icon={faArrowRight} />
+                  </span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* -------------------------------------------------------- engine */}
+        <section className={styles.band}>
+          <div className={`${styles.sectionHead} dg-reveal`}>
+            <span className={styles.kicker}>The engine</span>
+            <Heading as="h2">Sophisticated extraction, built from scratch.</Heading>
+            <p>
+              No cloud, no OCR fallback by default, no third-party PDF runtime —
+              just a purpose-built Rust core measured against real benchmarks.
+            </p>
+          </div>
+          <div className={styles.engineGrid}>
+            {engine.map((item, i) => (
+              <article
+                className={`${styles.engineCard} dg-reveal`}
+                style={{ transitionDelay: `${(i % 3) * 80}ms` }}
+                key={item.title}
+              >
+                <span className={styles.engineIcon} aria-hidden="true">
                   <FontAwesomeIcon icon={item.icon} />
                 </span>
                 <h3>{item.title}</h3>
@@ -268,31 +440,50 @@ data = doc.to_dict()
           </div>
         </section>
 
-        <section className={styles.docsBand} aria-labelledby="docs-preview">
-          <div className={styles.docsContent}>
-            <Heading as="h2" id="docs-preview">
-              Developer docs for the path-first workflow.
-            </Heading>
+        {/* ----------------------------------------------------- languages */}
+        <section className={styles.band}>
+          <div className={`${styles.sectionHead} dg-reveal`}>
+            <span className={styles.kicker}>Everywhere you build</span>
+            <Heading as="h2">Same engine. Four ways to call it.</Heading>
             <p>
-              Load a document path once, inspect structured metadata, handle
-              warnings and batch errors, then render Markdown, LaTeX, or JSON.
+              The Python and TypeScript packages are thin wrappers over the Rust
+              core, so every binding returns the identical document model.
             </p>
-            <pre className={styles.installBlock}>
-{`import dongler
-
-doc = dongler.load("document.pdf")
-markdown = doc.to_markdown()
-json_payload = doc.to_json()`}
-            </pre>
           </div>
-
-          <div className={styles.docsList}>
-            {docsPreview.map((item) => (
-              <Link className={styles.docsLink} to={item.to} key={item.title}>
-                <strong>{item.title}</strong>
-                <span>{item.body}</span>
-              </Link>
+          <div className={styles.langGrid}>
+            {languageCards.map((lang, i) => (
+              <article
+                className={`${styles.langCard} dg-reveal`}
+                style={{ transitionDelay: `${i * 70}ms` }}
+                key={lang.label}
+              >
+                <span className={styles.langIcon} aria-hidden="true">
+                  <FontAwesomeIcon icon={lang.icon} />
+                </span>
+                <div>
+                  <strong>{lang.label}</strong>
+                  <span className={styles.langNote}>{lang.note}</span>
+                </div>
+                <code>{lang.install}</code>
+              </article>
             ))}
+          </div>
+        </section>
+
+        {/* ------------------------------------------------------------ cta */}
+        <section className={styles.ctaBand}>
+          <div className={`${styles.ctaInner} dg-reveal`}>
+            <Heading as="h2">Start extracting in one line.</Heading>
+            <p>Install, point it at a document, and read structured output back.</p>
+            <div className={styles.actions}>
+              <Link className="button button--primary button--lg" to="/docs/quickstart">
+                Quick start{" "}
+                <FontAwesomeIcon icon={faArrowRight} className={styles.btnIcon} />
+              </Link>
+              <Link className="button button--secondary button--lg" to="/docs/api">
+                API reference
+              </Link>
+            </div>
           </div>
         </section>
       </main>

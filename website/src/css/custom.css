@@ -156,9 +156,9 @@ body {
   backdrop-filter: saturate(180%) blur(12px);
 }
 .navbar__inner {
-  margin: 0 auto;
-  max-width: 1400px;
-  padding: 0 1.25rem;
+  margin: 0;
+  max-width: none;
+  padding: 0 1.5rem;
 }
 .navbar__brand {
   margin-right: 1.25rem;
@@ -490,20 +490,38 @@ code,
 
 /* ---------------------------------------------------------------- footer */
 .footer {
+  /* Blend with the page rather than reading as a separate slate block. */
+  background: var(--dg-sidebar);
   border-top: 1px solid var(--dg-border);
-  background: var(--ifm-footer-background-color);
+  padding: 3.25rem 1.5rem 2.75rem;
+  --ifm-footer-background-color: var(--dg-sidebar);
   --ifm-footer-color: var(--dg-muted);
   --ifm-footer-link-color: var(--dg-muted);
+  --ifm-footer-link-hover-color: var(--dg-fg);
   --ifm-footer-title-color: var(--dg-fg);
 }
+.footer .container {
+  max-width: 1200px;
+}
 .footer__title {
+  color: var(--dg-fg);
   font-weight: 600;
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+.footer__link-item {
+  color: var(--dg-muted);
+}
 .footer__link-item:hover {
   color: var(--dg-fg);
+}
+.footer__copyright {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--dg-border);
+  font-size: 0.84rem;
+  color: var(--dg-muted);
 }
 
 /* ---------------------------------------------------------------- scrollbar */
@@ -524,6 +542,34 @@ code,
 *::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--ring));
   background-clip: content-box;
+}
+
+/* ------------------------------------------------ highlight.js (homepage) */
+.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+  color: inherit;
+}
+
+/* --------------------------------------------------------- scroll reveal */
+html.dg-reveal-ready .dg-reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+html.dg-reveal-ready .dg-reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  html.dg-reveal-ready .dg-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
 }
 
 @media (max-width: 996px) {

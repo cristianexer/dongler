@@ -469,6 +469,50 @@ fn load_path_extracts_pdf_text_with_page_geometry_and_source_anchors() {
 }
 
 #[test]
+fn load_path_classifies_larger_pdf_line_as_heading() {
+    let path = write_temp_bytes("heading.pdf", heading_and_body_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    match &document.pages[0].blocks[0] {
+        Block::Text(block) => {
+            assert_eq!(block.text, "Introduction Heading");
+            assert_eq!(block.kind, "heading_1");
+        }
+        other => panic!("expected heading text block, got {other:?}"),
+    }
+    let body_is_paragraph = document.pages[0].blocks.iter().any(|block| match block {
+        Block::Text(text) => text.kind == "paragraph" && text.text.contains("ordinary body"),
+        _ => false,
+    });
+    assert!(body_is_paragraph, "body line should stay a paragraph");
+
+    let markdown = document.to_markdown().unwrap();
+    assert!(
+        markdown.contains("# Introduction Heading"),
+        "markdown should render the heading: {markdown}"
+    );
+}
+
+#[test]
+fn load_path_expands_pdf_unicode_ligatures() {
+    let path = write_temp_bytes("ligatures.pdf", ligature_font_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let text = match &document.pages[0].blocks[0] {
+        Block::Text(block) => block.text.clone(),
+        other => panic!("expected text block, got {other:?}"),
+    };
+    assert!(text.contains("file"), "expected expanded ligature in {text:?}");
+    assert!(text.contains("flow"), "expected expanded ligature in {text:?}");
+    assert!(
+        !text.contains('\u{FB01}') && !text.contains('\u{FB02}'),
+        "raw ligature codepoints should be expanded: {text:?}"
+    );
+}
+
+#[test]
 fn load_path_decodes_ascii85_flate_pdf_streams() {
     let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
 
@@ -2515,6 +2559,49 @@ end";
     let content_stream = "BT /F1 12 Tf 72 720 Td <000000010002000300040005> Tj ET";
     let mut pdf = format!(
         "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /ArrayMap /Encoding /Identity-H /ToUnicode 6 0 R >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n6 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n",
+        content_stream.len(),
+        content_stream,
+        cmap.len(),
+        cmap
+    )
+    .into_bytes();
+    pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
+fn heading_and_body_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 24 Tf 72 720 Td (Introduction Heading) Tj /F1 12 Tf 0 -50 Td (This is ordinary body paragraph text that clearly forms the bulk of the page content.) Tj ET",
+        "",
+    )
+}
+
+fn ligature_font_pdf() -> Vec<u8> {
+    let cmap = "/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+7 beginbfchar
+<0001><FB01>
+<0002><006C>
+<0003><0065>
+<0004><FB02>
+<0005><006F>
+<0006><0077>
+<0007><0020>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end";
+    let content_stream =
+        "BT /F1 12 Tf 72 720 Td <0001000200030007000400050006> Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /Ligature /Encoding /Identity-H /ToUnicode 6 0 R >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n6 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n",
         content_stream.len(),
         content_stream,
         cmap.len(),

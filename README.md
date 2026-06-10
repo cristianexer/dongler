@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://cristianexer.github.io/dongler/"><img src="website/static/img/dongler-banner.svg" alt="Dongler — fast, Rust-native document extraction to Markdown, LaTeX, and JSON" width="100%"></a>
+  <a href="https://cristianexer.github.io/dongler/"><img src="https://cristianexer.github.io/dongler/img/dongler-banner.svg" alt="Dongler — fast, Rust-native document extraction to Markdown, LaTeX, and JSON" width="100%"></a>
 </p>
 
 <h1 align="center">Dongler</h1>

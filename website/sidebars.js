@@ -23,7 +23,7 @@ const sidebars = {
       type: "category",
       label: "Evaluation",
       collapsible: false,
-      items: ["evals"],
+      items: ["benchmarks", "evals"],
     },
   ],
 };

@@ -10,6 +10,9 @@ pub enum DonglerError {
     #[error("{format} extraction is planned but not implemented yet")]
     PlannedFormat { format: String },
 
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -31,6 +34,10 @@ impl DonglerError {
         Self::PlannedFormat {
             format: format.into(),
         }
+    }
+
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::InvalidInput(message.into())
     }
 
     pub fn pdf(message: impl Into<String>) -> Self {

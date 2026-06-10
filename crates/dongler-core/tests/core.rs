@@ -758,6 +758,17 @@ fn load_path_collapses_fragmented_pdf_word_glyphs() {
 }
 
 #[test]
+fn load_path_reads_cidfont_w_widths_for_word_spacing() {
+    let path = write_temp_bytes("cidfont-w-widths.pdf", cidfont_w_widths_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    // Correct only when the descendant CIDFont `/W` widths are parsed: the two
+    // 1000-em glyphs abut, so they read as a single word rather than "A B".
+    assert_eq!(document.to_markdown().unwrap(), "AB");
+}
+
+#[test]
 fn load_path_repairs_pdf_word_piece_spacing_and_punctuation() {
     let path = write_temp_bytes("word-piece-spacing.pdf", word_piece_spacing_pdf());
 
@@ -2705,6 +2716,40 @@ fn heading_and_body_pdf() -> Vec<u8> {
     )
 }
 
+/// A Type0/Identity-H font whose glyph widths live only in the descendant
+/// CIDFont `/W` array (CID 1 and 2 each 1000/1000 em). The two glyphs "A" and "B"
+/// are positioned 12pt apart — exactly the advance of a 1000-em glyph at size 12 —
+/// so they abut and read "AB" only when the `/W` widths are parsed. Without them,
+/// the fallback width is narrower, leaving a gap that reads as "A B".
+fn cidfont_w_widths_pdf() -> Vec<u8> {
+    let cmap = "/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfchar
+<0001> <0041>
+<0002> <0042>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end";
+    let content_stream = "BT /F1 12 Tf 72 720 Td <0001> Tj 12 0 Td <0002> Tj ET";
+    let mut pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>\nendobj\n4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /CIDTest /Encoding /Identity-H /DescendantFonts [7 0 R] /ToUnicode 6 0 R >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n6 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n7 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CIDTest /DW 1000 /W [1 [1000 1000]] >>\nendobj\n",
+        content_stream.len(),
+        content_stream,
+        cmap.len(),
+        cmap
+    )
+    .into_bytes();
+    pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+    pdf
+}
+
 fn ligature_font_pdf() -> Vec<u8> {
     let cmap = "/CIDInit /ProcSet findresource begin
 12 dict begin
@@ -3136,7 +3181,7 @@ fn tight_band_columns_pdf() -> Vec<u8> {
 fn math_left_column_band_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        "BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (Right prose begins) Tj (additional words) Tj ET BT /F1 12 Tf 72 700 Td (2: i) Tj 20 0 Td (= arg max) Tj 214 0 Td (Right prose continues) Tj (additional words) Tj ET",
+        "BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (Right prose begins) Tj ( additional words) Tj ET BT /F1 12 Tf 72 700 Td (2: i) Tj 20 0 Td (= arg max) Tj 214 0 Td (Right prose continues) Tj ( additional words) Tj ET",
         "",
     )
 }
@@ -3144,7 +3189,7 @@ fn math_left_column_band_pdf() -> Vec<u8> {
 fn algorithm_single_right_run_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        "BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (a correlation-aware selection mechanism) Tj ET BT /F1 12 Tf 72 700 Td (2: while) Tj 40 0 Td (l ≤ N do) Tj 174 0 Td (resolve coherence conflicts) Tj ET",
+        "BT /F1 12 Tf 72 720 Td (1: T) Tj 20 0 Td (= λ) Tj 214 0 Td (a correlation-aware selection mechanism) Tj ET BT /F1 12 Tf 72 700 Td (2: while) Tj 40 0 Td ( l ≤ N do) Tj 174 0 Td (resolve coherence conflicts) Tj ET",
         "",
     )
 }

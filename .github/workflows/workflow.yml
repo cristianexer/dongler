@@ -13,26 +13,94 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    name: Bump Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.bump.outputs.sha }}
+      bumped: ${{ steps.bump.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Rebase onto the freshest main so concurrent pushes produce
+          # sequential versions instead of a rejected push.
+          git pull --rebase origin main
+
+          head_msg="$(git log -1 --pretty=%s)"
+          current="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+
+          # Skip the auto-bump for manual releases, opt-outs, and manual dispatch.
+          if [ "${{ github.event_name }}" != "push" ] || \
+             printf '%s' "$head_msg" | grep -qiE '^Release |\[skip release\]'; then
+            echo "::notice::Skipping auto version bump (event=${{ github.event_name }}, head=\"$head_msg\")."
+            {
+              echo "version=$current"
+              echo "sha=$(git rev-parse HEAD)"
+              echo "bumped=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${current%%[-+]*}"
+          IFS=. read -r major minor patch <<< "$base"
+          next="${major}.${minor}.$((patch + 1))"
+          echo "Auto-bumping ${current} -> ${next}"
+
+          python3 scripts/prepare-release.py "$next"
+
+          git add -A
+          git commit -m "Release ${next}"
+          git push origin HEAD:main
+          {
+            echo "version=${next}"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "bumped=true"
+          } >> "$GITHUB_OUTPUT"
+
   release-checks:
     name: Release Metadata Checks
     runs-on: ubuntu-latest
+    needs: [version]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - run: python3 scripts/check-versions.py
 
   test-rust:
     name: Test Rust
     runs-on: ubuntu-latest
+    needs: [version]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace --locked
 
   test-python:
     name: Test Python
     runs-on: ubuntu-latest
+    needs: [version]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --dev --locked
@@ -42,8 +110,11 @@ jobs:
   test-node:
     name: Test Node
     runs-on: ubuntu-latest
+    needs: [version]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -58,12 +129,15 @@ jobs:
   docs-site:
     name: Build Documentation Site
     runs-on: ubuntu-latest
+    needs: [version]
     permissions:
       contents: read
       pages: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -86,6 +160,7 @@ jobs:
   private-corpus:
     name: Test Private Corpus
     runs-on: ubuntu-latest
+    needs: [version]
     env:
       DONGLER_CORPUS_URL: ${{ secrets.DONGLER_CORPUS_URL }}
       DONGLER_CORPUS_SHA256: ${{ secrets.DONGLER_CORPUS_SHA256 }}
@@ -103,6 +178,8 @@ jobs:
           echo "available=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         if: steps.private-corpus-secrets.outputs.available == 'true'
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
         if: steps.private-corpus-secrets.outputs.available == 'true'
       - name: Build CLI
@@ -135,9 +212,11 @@ jobs:
   package-artifacts:
     name: Build Package Artifacts
     runs-on: ubuntu-latest
-    needs: [release-checks, test-rust, test-python, test-node, docs-site, private-corpus]
+    needs: [version, release-checks, test-rust, test-python, test-node, docs-site, private-corpus]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -182,7 +261,7 @@ jobs:
   build-cli-binaries:
     name: Build CLI Binary (${{ matrix.asset }})
     runs-on: ${{ matrix.os }}
-    needs: [test-rust, test-python, test-node, private-corpus]
+    needs: [version, test-rust, test-python, test-node, private-corpus]
     strategy:
       fail-fast: false
       matrix:
@@ -201,6 +280,8 @@ jobs:
             binary: dongler.exe
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release -p dongler --locked
       - name: Package Unix binary
@@ -227,12 +308,14 @@ jobs:
   publish-crates:
     name: Publish crates.io
     runs-on: ubuntu-latest
-    needs: [package-artifacts]
+    needs: [version, package-artifacts]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish Rust crates
         run: |
@@ -307,13 +390,15 @@ jobs:
   publish-npm:
     name: Publish npm
     runs-on: ubuntu-latest
-    needs: [package-artifacts]
+    needs: [version, package-artifacts]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: release-packages
@@ -344,7 +429,7 @@ jobs:
   deploy-docs:
     name: Deploy GitHub Pages
     runs-on: ubuntu-latest
-    needs: [release-checks, test-rust, test-python, test-node, docs-site, private-corpus]
+    needs: [release-checks, test-rust, test-node, docs-site, private-corpus]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       pages: write
@@ -359,11 +444,13 @@ jobs:
   github-release:
     name: Publish GitHub Release Assets
     runs-on: ubuntu-latest
-    needs: [publish-crates, publish-pypi, publish-npm, build-cli-binaries]
+    needs: [version, publish-crates, publish-pypi, publish-npm, build-cli-binaries]
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
@@ -380,13 +467,14 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.version.outputs.sha }}
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/dongler-core/Cargo.toml | head -n1)"
           tag="v$version"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --target "$GITHUB_SHA" --title "Dongler $tag"
+            gh release edit "$tag" --target "$RELEASE_SHA" --title "Dongler $tag"
           else
-            gh release create "$tag" --target "$GITHUB_SHA" --title "Dongler $tag" --notes "Automated Dongler release for $tag."
+            gh release create "$tag" --target "$RELEASE_SHA" --title "Dongler $tag" --notes "Automated Dongler release for $tag."
           fi
           find release-assets -type f -print0 | xargs -0 -I{} gh release upload "$tag" "{}" --clobber

@@ -1,5 +1,5 @@
-const lightCodeTheme = require("prism-react-renderer").themes.github;
-const darkCodeTheme = require("prism-react-renderer").themes.dracula;
+const lightCodeTheme = require("prism-react-renderer").themes.oneLight;
+const darkCodeTheme = require("prism-react-renderer").themes.oneDark;
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -83,22 +83,24 @@ const config = {
   themeConfig: {
     image: "img/dongler-social-card.svg",
     colorMode: {
-      defaultMode: "light",
-      respectPrefersColorScheme: true,
+      defaultMode: "dark",
+      respectPrefersColorScheme: false,
     },
     navbar: {
       title: "Dongler",
       logo: {
         alt: "Dongler",
-        src: "img/dongler-logo.png",
+        src: "img/dongler-mark.svg",
       },
       items: [
         { to: "/docs/intro", label: "Docs", position: "left" },
         { to: "/docs/quickstart", label: "Quick start", position: "left" },
+        { to: "/docs/api", label: "API", position: "left" },
         {
           href: "https://github.com/cristianexer/dongler",
-          label: "GitHub",
           position: "right",
+          className: "header-github-link",
+          "aria-label": "GitHub repository",
         },
       ],
     },

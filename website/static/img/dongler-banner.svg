@@ -1,0 +1,139 @@
+<svg width="1280" height="360" viewBox="0 0 1280 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Dongler — fast, Rust-native document extraction to Markdown, LaTeX, and JSON">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#070d18"/>
+      <stop offset="0.55" stop-color="#0a1422"/>
+      <stop offset="1" stop-color="#0b1a26"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(960 120) rotate(120) scale(420 520)">
+      <stop offset="0" stop-color="#17d2c8" stop-opacity="0.35"/>
+      <stop offset="0.6" stop-color="#0e8e9a" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#0a1422" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5ef0e6"/>
+      <stop offset="1" stop-color="#17b9c8"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16263a"/>
+      <stop offset="1" stop-color="#0f1d2e"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f4fbff"/>
+      <stop offset="1" stop-color="#bfe9ef"/>
+    </linearGradient>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <path d="M34 0H0V34" fill="none" stroke="#21384c" stroke-opacity="0.30" stroke-width="1"/>
+    </pattern>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1280" height="360" rx="22" fill="url(#bg)"/>
+  <rect width="1280" height="360" rx="22" fill="url(#grid)"/>
+  <rect width="1280" height="360" rx="22" fill="url(#glow)"/>
+  <rect x="0.75" y="0.75" width="1278.5" height="358.5" rx="21.25" fill="none" stroke="#2bd3c9" stroke-opacity="0.22" stroke-width="1.5"/>
+
+  <!-- left: wordmark + tagline -->
+  <g transform="translate(72 96)">
+    <g transform="translate(0 0)">
+      <rect x="0" y="-2" width="46" height="46" rx="12" fill="#0e2230" stroke="#2bd3c9" stroke-opacity="0.5"/>
+      <path d="M12 8h14a10 10 0 0 1 0 20H12z" fill="none" stroke="url(#accent)" stroke-width="3.4" stroke-linejoin="round"/>
+      <circle cx="30" cy="18" r="3.1" fill="#ff9a5c"/>
+    </g>
+    <text x="62" y="34" font-family="'Geist','Inter',ui-sans-serif,system-ui,Segoe UI,Helvetica,Arial,sans-serif" font-size="58" font-weight="800" letter-spacing="-1.5" fill="url(#wordmark)">dongler</text>
+
+    <text x="2" y="90" font-family="'Geist','Inter',ui-sans-serif,system-ui,Segoe UI,Helvetica,Arial,sans-serif" font-size="26" font-weight="650" fill="#dbe9f2">Fast, Rust-native document extraction</text>
+    <text x="2" y="122" font-family="'Geist','Inter',ui-sans-serif,system-ui,Segoe UI,Helvetica,Arial,sans-serif" font-size="18.5" font-weight="500" fill="#8aa2b6">PDFs &amp; documents&#8201;&#8594;&#8201;Markdown&#8201;&#183;&#8201;LaTeX&#8201;&#183;&#8201;JSON&#8197;&#183;&#8197;no API, no cloud</text>
+
+    <!-- runtime chips -->
+    <g font-family="'Geist','Inter',ui-sans-serif,system-ui,Segoe UI,Helvetica,Arial,sans-serif" font-size="14.5" font-weight="600">
+      <g transform="translate(2 150)">
+        <rect width="74" height="30" rx="9" fill="#0f2230" stroke="#244b56"/>
+        <text x="37" y="20" text-anchor="middle" fill="#9fe6e0">Rust</text>
+      </g>
+      <g transform="translate(86 152)">
+        <rect width="92" height="30" rx="9" fill="#0f2230" stroke="#244b56"/>
+        <text x="46" y="20" text-anchor="middle" fill="#9fe6e0">Python</text>
+      </g>
+      <g transform="translate(188 152)">
+        <rect width="118" height="30" rx="9" fill="#0f2230" stroke="#244b56"/>
+        <text x="59" y="20" text-anchor="middle" fill="#9fe6e0">TypeScript</text>
+      </g>
+      <g transform="translate(316 152)">
+        <rect width="60" height="30" rx="9" fill="#0f2230" stroke="#244b56"/>
+        <text x="30" y="20" text-anchor="middle" fill="#9fe6e0">CLI</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- right: document -> structure visual -->
+  <g transform="translate(742 64)">
+    <!-- ambient glow behind panels -->
+    <ellipse cx="240" cy="120" rx="220" ry="150" fill="#15b9c0" fill-opacity="0.16" filter="url(#soft)"/>
+
+    <!-- source document -->
+    <g transform="translate(0 22)">
+      <rect x="0" y="0" width="150" height="194" rx="14" fill="url(#paper)" stroke="#2c4a60" stroke-width="1.5"/>
+      <rect x="0" y="0" width="150" height="34" rx="14" fill="#13283a"/>
+      <circle cx="18" cy="17" r="4" fill="#ff8c52"/><circle cx="33" cy="17" r="4" fill="#f0b35b"/><circle cx="48" cy="17" r="4" fill="#46c7bd"/>
+      <g fill="#3a5a70">
+        <rect x="20" y="54" width="110" height="7" rx="3.5"/>
+        <rect x="20" y="72" width="92" height="7" rx="3.5"/>
+        <rect x="20" y="90" width="104" height="7" rx="3.5"/>
+        <rect x="20" y="116" width="60" height="7" rx="3.5"/>
+        <rect x="20" y="134" width="110" height="7" rx="3.5"/>
+        <rect x="20" y="152" width="84" height="7" rx="3.5"/>
+        <rect x="20" y="170" width="98" height="7" rx="3.5"/>
+      </g>
+    </g>
+
+    <!-- flow arrow -->
+    <g transform="translate(168 118)">
+      <path d="M0 0H78" stroke="url(#accent)" stroke-width="2.4" stroke-dasharray="2 7" stroke-linecap="round"/>
+      <path d="M70 -7l14 7-14 7z" fill="#5ef0e6"/>
+      <circle cx="40" cy="0" r="16" fill="#0c1f2b" stroke="#2bd3c9" stroke-opacity="0.6"/>
+      <path d="M33 0l5 5 11-11" stroke="#5ef0e6" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- structured output panel -->
+    <g transform="translate(286 0)">
+      <rect x="0" y="0" width="206" height="240" rx="16" fill="#0c1c2b" stroke="#244b56" stroke-width="1.5"/>
+      <!-- heading line -->
+      <g transform="translate(18 24)">
+        <text font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" font-weight="700" fill="#5ef0e6"># Title</text>
+      </g>
+      <!-- paragraph with bold/italic chips -->
+      <g transform="translate(18 44)" fill="#5e7c92">
+        <rect x="0" y="0" width="168" height="6" rx="3"/>
+        <rect x="0" y="13" width="140" height="6" rx="3"/>
+      </g>
+      <!-- table grid -->
+      <g transform="translate(18 76)">
+        <rect x="0" y="0" width="170" height="64" rx="6" fill="#0a1622" stroke="#2c4a60"/>
+        <line x1="0" y1="21" x2="170" y2="21" stroke="#2c4a60"/>
+        <line x1="0" y1="42" x2="170" y2="42" stroke="#2c4a60"/>
+        <line x1="57" y1="0" x2="57" y2="64" stroke="#2c4a60"/>
+        <line x1="114" y1="0" x2="114" y2="64" stroke="#2c4a60"/>
+        <rect x="10" y="7" width="32" height="6" rx="3" fill="#46c7bd"/>
+        <rect x="67" y="7" width="34" height="6" rx="3" fill="#46c7bd"/>
+        <rect x="124" y="7" width="30" height="6" rx="3" fill="#46c7bd"/>
+        <rect x="10" y="28" width="34" height="6" rx="3" fill="#4a647a"/>
+        <rect x="67" y="28" width="28" height="6" rx="3" fill="#4a647a"/>
+        <rect x="124" y="28" width="34" height="6" rx="3" fill="#4a647a"/>
+        <rect x="10" y="49" width="30" height="6" rx="3" fill="#4a647a"/>
+        <rect x="67" y="49" width="36" height="6" rx="3" fill="#4a647a"/>
+        <rect x="124" y="49" width="26" height="6" rx="3" fill="#4a647a"/>
+      </g>
+      <!-- json braces -->
+      <g transform="translate(18 154)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600">
+        <text fill="#8aa2b6">{</text>
+        <text x="14" y="20" fill="#ff9a5c">"bbox"</text><text x="64" y="20" fill="#5e7c92">: […],</text>
+        <text x="14" y="40" fill="#ff9a5c">"text"</text><text x="62" y="40" fill="#5e7c92">: "…"</text>
+        <text y="60" fill="#8aa2b6">}</text>
+      </g>
+    </g>
+  </g>
+</svg>

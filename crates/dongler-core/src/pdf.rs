@@ -2266,24 +2266,25 @@ fn detect_ruled_grid_table(
         return None;
     }
 
+    // Merged cells: a cell whose content overruns a ruled column boundary into an
+    // empty neighbour band spans it. The grid text stays rectangular so renderers
+    // are unchanged; only `cells` carries the span topology.
+    let (col_span, covered) = merged_cell_col_spans(&cell_boxes, &verticals);
+
     let mut cells = Vec::new();
-    for column in 0..columns {
-        cells.push(TableCell {
-            row: 0,
-            column,
-            text: headers[column].clone(),
-            bbox: cell_boxes[0][column],
-            is_header: true,
-        });
-    }
-    for (body_index, row) in body_rows.iter().enumerate() {
-        for (column, text) in row.iter().enumerate() {
+    for row in 0..rows {
+        for column in 0..columns {
+            if covered[row][column] {
+                continue;
+            }
             cells.push(TableCell {
-                row: body_index + 1,
+                row,
                 column,
-                text: text.clone(),
-                bbox: cell_boxes[body_index + 1][column],
-                is_header: false,
+                text: grid[row][column].clone(),
+                bbox: cell_boxes[row][column],
+                is_header: row == 0,
+                col_span: col_span[row][column],
+                row_span: 1,
             });
         }
     }
@@ -2310,6 +2311,58 @@ fn detect_ruled_grid_table(
         },
         line_indices,
     })
+}
+
+/// Detect horizontally merged cells (column spans) in a ruled grid.
+///
+/// A non-empty cell whose content bbox overruns its ruled column boundary into
+/// an adjacent *empty* band (by more than `SPAN_MARGIN`) is treated as spanning
+/// it — the natural signature of a grouped column header, whose label is
+/// physically wider than one column. Returns the per-cell `col_span` grid plus a
+/// `covered` mask of the spanned-over continuation positions, which the caller
+/// omits from `cells`.
+///
+/// Spans are scanned rightward from the anchoring cell, so a centred merged
+/// header must lean into its left band (the common case). Row spans are not
+/// inferred here: a vertically merged cell is usually a single line centred in a
+/// tall region whose bbox does not overflow the row rule, so it needs
+/// rule-segment analysis rather than content overflow.
+fn merged_cell_col_spans(
+    cell_boxes: &[Vec<Option<BBox>>],
+    verticals: &[f32],
+) -> (Vec<Vec<usize>>, Vec<Vec<bool>>) {
+    const SPAN_MARGIN: f32 = 2.0;
+    let rows = cell_boxes.len();
+    let columns = cell_boxes.first().map_or(0, Vec::len);
+    let mut col_span = vec![vec![1usize; columns]; rows];
+    let mut covered = vec![vec![false; columns]; rows];
+
+    for row in 0..rows {
+        for column in 0..columns {
+            if covered[row][column] {
+                continue;
+            }
+            let Some(bbox) = cell_boxes[row][column] else {
+                continue;
+            };
+
+            let content_right = bbox.x + bbox.width;
+            let mut next_column = column + 1;
+            while next_column < columns
+                && cell_boxes[row][next_column].is_none()
+                && !covered[row][next_column]
+                && verticals
+                    .get(next_column)
+                    .is_some_and(|edge| content_right > edge + SPAN_MARGIN)
+            {
+                covered[row][next_column] = true;
+                next_column += 1;
+            }
+            col_span[row][column] = next_column - column;
+        }
+    }
+
+    (col_span, covered)
 }
 
 fn has_nearby_ruled_table_label(
@@ -2455,6 +2508,8 @@ fn detect_exact_run_table(page_number: usize, lines: &[TextLine]) -> Option<Dete
                 text: run.text.clone(),
                 bbox: Some(run.bbox),
                 is_header: row_index == 0,
+                col_span: 1,
+                row_span: 1,
             });
         }
     }
@@ -2730,6 +2785,8 @@ fn build_implied_alignment_table(
             text,
             bbox: cell.map(|cell| cell.bbox),
             is_header: true,
+            col_span: 1,
+            row_span: 1,
         });
     }
     for (row_index, row) in rows.iter().enumerate() {
@@ -2748,6 +2805,8 @@ fn build_implied_alignment_table(
                 text: cell.text.clone(),
                 bbox: Some(cell.bbox),
                 is_header: false,
+                col_span: 1,
+                row_span: 1,
             });
         }
     }

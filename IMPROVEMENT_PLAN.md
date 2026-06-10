@@ -211,7 +211,9 @@ Since dongler is its own Rust engine, we adopt **techniques**, already folded in
 | **Docling / TableFormer** | Predict grid topology, then **snap real PDF text cells back into the grid** in post-processing (avoids re-transcription) — applicable to our ruled-grid path | table accuracy |
 | **Nougat** | Benchmark target & metrics (edit-dist/BLEU/METEOR/F1) for math/markdown GT | 4.9 |
 
-**Table recall fix (from pdfplumber):** today implied/alignment tables require a literal "Table" label nearby ([pdf.rs:2343](crates/dongler-core/src/pdf.rs)) and a ruled grid needs ≥4 rows×≥2 cols — a recall gap. Adopt pdfplumber's `text` strategy (infer rulings from `min_words_vertical=3` aligned words) to promote unlabeled columnar blocks; add `rowspan`/`colspan` to `TableCell` ([ir.rs:167](crates/dongler-core/src/ir.rs)) for spanning cells (none today).
+**Table recall fix (from pdfplumber):** today implied/alignment tables require a literal "Table" label nearby ([pdf.rs:2343](crates/dongler-core/src/pdf.rs)) and a ruled grid needs ≥4 rows×≥2 cols — a recall gap. Adopt pdfplumber's `text` strategy (infer rulings from `min_words_vertical=3` aligned words) to promote unlabeled columnar blocks.
+
+_Spanning cells (partial — done):_ `TableCell` now carries `col_span`/`row_span` ([ir.rs](crates/dongler-core/src/ir.rs)), and the ruled-grid detector infers **column spans** for grouped headers via content overflow into empty ruled bands ([pdf.rs](crates/dongler-core/src/pdf.rs), `merged_cell_col_spans`). Spanned-over positions are omitted from `cells`; the rectangular grid is preserved so renderers are unchanged. Still TODO: **row spans** (need rule-segment analysis, not content overflow, since a merged row is usually a single centred line), `\multicolumn` LaTeX rendering, PubTabNet `colspan`/`rowspan` parsing in [json.rs](crates/dongler-core/src/json.rs), and a span-aware TEDS in the harness so spans become measurable (Phase 3).
 
 ---
 

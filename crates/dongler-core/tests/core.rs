@@ -1156,6 +1156,57 @@ fn load_path_extracts_pdf_table_from_ruled_grid_lines() {
 }
 
 #[test]
+fn load_path_marks_merged_header_cell_as_column_span() {
+    let path = write_temp_bytes("merged-header-grid.pdf", merged_header_grid_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected ruled grid table with a merged header");
+
+    // The rectangular grid is preserved for renderers.
+    assert_eq!(
+        table.headers,
+        vec![
+            "Item".to_owned(),
+            "Measured Values Total".to_owned(),
+            String::new(),
+        ]
+    );
+
+    // The grouped header spans the two measurement columns...
+    let span_cell = table
+        .cells
+        .iter()
+        .find(|cell| cell.text == "Measured Values Total")
+        .expect("expected the grouped header cell");
+    assert_eq!(span_cell.column, 1);
+    assert_eq!(span_cell.col_span, 2);
+    assert_eq!(span_cell.row_span, 1);
+    assert!(span_cell.is_header);
+
+    // ...and its spanned-over continuation position is omitted from `cells`.
+    assert!(!table
+        .cells
+        .iter()
+        .any(|cell| cell.row == 0 && cell.column == 2));
+
+    // Ordinary cells keep a span of 1.
+    let width_cell = table
+        .cells
+        .iter()
+        .find(|cell| cell.text == "Width")
+        .expect("expected the Width sub-header");
+    assert_eq!(width_cell.col_span, 1);
+}
+
+#[test]
 fn load_path_does_not_treat_unlabeled_ruled_columns_as_table() {
     let path = write_temp_bytes("unlabeled-ruled-columns.pdf", unlabeled_ruled_columns_pdf());
 
@@ -2959,6 +3010,26 @@ fn ruled_grid_table_pdf() -> Vec<u8> {
 72 730 m 292 730 l S
 BT /F1 12 Tf 90 742 Td (Description) Tj 104 0 Td (Result) Tj ET
 BT /F1 12 Tf 110 712 Td (Alpha) Tj 126 0 Td (42) Tj ET",
+        "",
+    )
+}
+
+fn merged_header_grid_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 782 Td (Table 4 Overview) Tj ET
+72 680 300 90 re S
+172 680 m 172 770 l S
+272 680 m 272 770 l S
+72 710 m 372 710 l S
+72 740 m 372 740 l S
+BT /F1 12 Tf 95 750 Td (Item) Tj ET
+BT /F1 12 Tf 180 750 Td (Measured Values Total) Tj ET
+BT /F1 12 Tf 185 720 Td (Width) Tj ET
+BT /F1 12 Tf 285 720 Td (Height) Tj ET
+BT /F1 12 Tf 110 690 Td (A) Tj ET
+BT /F1 12 Tf 200 690 Td (10) Tj ET
+BT /F1 12 Tf 300 690 Td (20) Tj ET",
         "",
     )
 }

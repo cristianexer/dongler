@@ -248,13 +248,19 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         return Err(DonglerError::pdf("no indirect objects found"));
     }
 
-    let object_map = objects
+    // Share each parsed object behind a single Arc between the ordered list
+    // (which preserves page order and any duplicate object numbers exactly) and
+    // the lookup map, so object bodies are stored once instead of copied per
+    // map entry.
+    let title = extract_info_string(&objects, "Title");
+    let objects: Vec<Arc<PdfObject>> = objects.into_iter().map(Arc::new).collect();
+    let object_map: HashMap<u32, Arc<PdfObject>> = objects
         .iter()
-        .map(|object| (object.object_number, object.clone()))
-        .collect::<HashMap<_, _>>();
+        .map(|object| (object.object_number, Arc::clone(object)))
+        .collect();
     let page_seeds = objects
         .iter()
-        .filter_map(|object| page_seed(object, &object_map))
+        .filter_map(|object| page_seed(object.as_ref(), &object_map))
         .enumerate()
         .map(|(index, mut seed)| {
             seed.number = index + 1;
@@ -305,7 +311,7 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         .filter_map(|number| {
             object_map
                 .get(&number)
-                .map(|font| (number, Arc::new(font_decoder(font, &object_map))))
+                .map(|font| (number, Arc::new(font_decoder(font.as_ref(), &object_map))))
         })
         .collect();
 
@@ -331,7 +337,7 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
             format: "pdf".to_owned(),
             engine: engine_name.to_owned(),
             source: source.path.clone(),
-            title: extract_info_string(&objects, "Title"),
+            title,
             character_count: all_text.chars().count(),
             word_count: all_text.split_whitespace().count(),
             block_count: pages.iter().map(|page| page.blocks.len()).sum(),
@@ -347,7 +353,7 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
 
 fn extract_page(
     seed: &PageSeed,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
     font_cache: &HashMap<u32, Arc<FontDecoder>>,
 ) -> PageExtraction {
     let media_box = parse_number_array_after(&seed.body, "/MediaBox")
@@ -375,7 +381,7 @@ fn extract_page(
     for content_ref in contents {
         match object_map
             .get(&(content_ref as u32))
-            .map(decode_stream_object)
+            .map(|object| decode_stream_object(object.as_ref()))
         {
             Some(Ok(Some(stream))) => {
                 let object_id = format!("{content_ref} 0 R");
@@ -483,7 +489,7 @@ fn interpret_content_stream(
     source_object_ids: &[String],
     xobjects: &HashMap<String, u32>,
     fonts: &HashMap<String, Arc<FontDecoder>>,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> ContentExtraction {
     let mut state = GraphicsState::default();
     let mut graphics_stack = Vec::new();
@@ -3300,7 +3306,7 @@ fn expand_object_streams(objects: &mut Vec<PdfObject>) {
     objects.extend(expanded);
 }
 
-fn page_seed(object: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> Option<PageSeed> {
+fn page_seed(object: &PdfObject, object_map: &HashMap<u32, Arc<PdfObject>>) -> Option<PageSeed> {
     let body = lossy(&object.body);
     let compact = body.split_whitespace().collect::<String>();
     if compact.contains("/Type/Page") && !compact.contains("/Type/Pages") {
@@ -3315,7 +3321,7 @@ fn page_seed(object: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> Option
 
 fn body_with_inherited_page_tree_entries(
     page_body: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> String {
     let mut body = page_body.to_owned();
     append_parent_page_tree_entries(page_body, object_map, &mut body, 0);
@@ -3324,7 +3330,7 @@ fn body_with_inherited_page_tree_entries(
 
 fn append_parent_page_tree_entries(
     body: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
     output: &mut String,
     depth: usize,
 ) {
@@ -3568,7 +3574,7 @@ fn parse_resource_refs(text: &str, key: &str) -> HashMap<String, u32> {
     parse_named_refs(dict)
 }
 
-fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, PdfObject>) -> Option<String> {
+fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> Option<String> {
     let resource_ref = parse_direct_ref_after_key(page_body, "/Resources")?;
     object_map
         .get(&(resource_ref as u32))
@@ -3577,7 +3583,7 @@ fn resolve_resource_body(page_body: &str, object_map: &HashMap<u32, PdfObject>) 
 
 fn load_font_decoders(
     resource_text: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
     font_cache: &HashMap<u32, Arc<FontDecoder>>,
 ) -> HashMap<String, Arc<FontDecoder>> {
     resolve_named_resource_refs(resource_text, "/Font", object_map)
@@ -3587,7 +3593,7 @@ fn load_font_decoders(
                 Arc::new(
                     object_map
                         .get(&object_number)
-                        .map(|font| font_decoder(font, object_map))
+                        .map(|font| font_decoder(font.as_ref(), object_map))
                         .unwrap_or_default(),
                 )
             });
@@ -3599,7 +3605,7 @@ fn load_font_decoders(
 fn resolve_named_resource_refs(
     resource_text: &str,
     key: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> HashMap<String, u32> {
     let direct = parse_resource_refs(resource_text, key);
     if !direct.is_empty() {
@@ -3612,7 +3618,7 @@ fn resolve_named_resource_refs(
         .unwrap_or_default()
 }
 
-fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontDecoder {
+fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, Arc<PdfObject>>) -> FontDecoder {
     let font_body = lossy(&font.body);
     let encoding = font_encoding_differences(&font_body, object_map);
     let widths = font_widths(&font_body, &encoding);
@@ -3645,7 +3651,7 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             descent,
         };
     };
-    let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode) else {
+    let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode.as_ref()) else {
         return FontDecoder {
             cmap: HashMap::new(),
             encoding,
@@ -3671,7 +3677,7 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
 /// Font ascent/descent in em units (text-space fractions of the font size),
 /// from `/FontDescriptor` `/Ascent` and `/Descent` (glyph space, /1000). Falls
 /// back to typical Latin metrics when the descriptor is absent.
-fn font_vertical_metrics(font_body: &str, object_map: &HashMap<u32, PdfObject>) -> (f32, f32) {
+fn font_vertical_metrics(font_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> (f32, f32) {
     let mut ascent = 0.75;
     let mut descent = -0.25;
     if let Some(descriptor_ref) = parse_direct_ref_after_key(font_body, "/FontDescriptor") {
@@ -3695,7 +3701,7 @@ fn font_vertical_metrics(font_body: &str, object_map: &HashMap<u32, PdfObject>) 
 /// Detect bold/italic for a font from its `/BaseFont` name (after stripping the
 /// subset prefix) and, when present, its `/FontDescriptor` `/Flags` (bit 7
 /// Italic, bit 19 ForceBold) and `/ItalicAngle`.
-fn font_style(font_body: &str, object_map: &HashMap<u32, PdfObject>) -> (bool, bool) {
+fn font_style(font_body: &str, object_map: &HashMap<u32, Arc<PdfObject>>) -> (bool, bool) {
     let mut bold = false;
     let mut italic = false;
     if let Some(name) = parse_name_after(font_body, "/BaseFont") {
@@ -3767,7 +3773,7 @@ fn font_widths(font_body: &str, encoding: &HashMap<u8, String>) -> HashMap<char,
 
 fn font_encoding_differences(
     font_body: &str,
-    object_map: &HashMap<u32, PdfObject>,
+    object_map: &HashMap<u32, Arc<PdfObject>>,
 ) -> HashMap<u8, String> {
     if let Some(encoding_ref) = parse_direct_ref_after_key(font_body, "/Encoding") {
         if let Some(object) = object_map.get(&(encoding_ref as u32)) {

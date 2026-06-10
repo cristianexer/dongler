@@ -953,7 +953,9 @@ def test_download_defaults_include_readoc_markdown_subset(tmp_path, monkeypatch)
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     selected = []
 
-    def fake_download_dataset(dataset, _data_root, _repo_root, _budget_bytes):
+    def fake_download_dataset(
+        dataset, _data_root, _repo_root, _budget_bytes, _allowed=None
+    ):
         selected.append(dataset)
         return {
             "dataset": dataset["name"],
@@ -1024,12 +1026,14 @@ def test_markdown_table_uses_compact_renderable_columns():
     assert "Coverage is `parse / bbox / anchors`" in table
     header = next(line for line in table.splitlines() if line.startswith("| Dataset |"))
     assert header == (
-        "| Dataset | Status | Local data | Docs eval | Coverage | Pages/sec | GT accuracy |"
+        "| Dataset | Status | Local data | Docs eval | Coverage | Pages/sec | GT accuracy | Edit sim |"
     )
     assert "Task" not in header
     assert "Notes" not in header
-    assert {line.count("|") for line in table.splitlines() if line.startswith("|")} == {8}
-    assert "| DemoBench | ok | 10.0 MB | 2 | 100.0% / 50.0% / 75.0% | 42.25 | 91.0% |" in table
+    assert {line.count("|") for line in table.splitlines() if line.startswith("|")} == {9}
+    assert (
+        "| DemoBench | ok | 10.0 MB | 2 | 100.0% / 50.0% / 75.0% | 42.25 | 91.0% | n/a |" in table
+    )
     assert "long note" not in table
 
 

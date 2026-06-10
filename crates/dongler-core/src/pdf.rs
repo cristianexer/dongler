@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -255,7 +256,8 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
     }
 
     let mut document_warnings = Vec::new();
-    if contains_name(bytes, b"/Encrypt") {
+    let encrypted = contains_name(bytes, b"/Encrypt");
+    if encrypted {
         document_warnings.push(warning(
             "pdf.encrypted",
             "warning",
@@ -300,7 +302,7 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
             block_count: pages.iter().map(|page| page.blocks.len()).sum(),
             file_size_bytes: Some(bytes.len() as u64),
             pdf_version: pdf_version(bytes),
-            encrypted: contains_name(bytes, b"/Encrypt"),
+            encrypted,
         },
         pages,
         assets,
@@ -725,10 +727,11 @@ fn build_blocks(page_number: usize, lines: &[TextLine], edges: &[GraphicEdge]) -
         return build_blocks_with_table(page_number, lines, detected_table);
     }
 
+    let body_size = page_body_size(lines);
     let split_lines = split_wide_text_lines(lines);
     let text_blocks = text_lines_in_reading_order(&split_lines)
         .into_iter()
-        .filter_map(|line| text_block_from_line(page_number, line))
+        .filter_map(|line| text_block_from_line(page_number, line, body_size))
         .collect::<Vec<_>>();
     merge_wrapped_text_blocks(text_blocks)
         .into_iter()
@@ -741,6 +744,7 @@ fn build_blocks_with_table(
     lines: &[TextLine],
     detected_table: DetectedTable,
 ) -> Vec<Block> {
+    let body_size = page_body_size(lines);
     let remaining_lines = lines
         .iter()
         .enumerate()
@@ -751,7 +755,7 @@ fn build_blocks_with_table(
     let text_blocks = merge_wrapped_text_blocks(
         text_lines_in_reading_order(&split_lines)
             .into_iter()
-            .filter_map(|line| text_block_from_line(page_number, line))
+            .filter_map(|line| text_block_from_line(page_number, line, body_size))
             .collect(),
     );
     let table_top = detected_table
@@ -819,6 +823,25 @@ fn split_wide_text_lines(lines: &[TextLine]) -> Vec<TextLine> {
     split_lines
 }
 
+/// True when a line's runs are already ordered left-to-right by x.
+fn line_runs_x_sorted(runs: &[TextRun]) -> bool {
+    runs.windows(2).all(|pair| pair[0].bbox.x <= pair[1].bbox.x)
+}
+
+/// Runs of a line ordered left-to-right by x. Borrows when already sorted — the
+/// common case, since `group_text_runs` keeps each line x-sorted — and clones +
+/// sorts only when a reorder is actually required, avoiding a deep
+/// `Vec<TextRun>` clone on every column/word pass.
+fn runs_sorted_by_x(line: &TextLine) -> Cow<'_, [TextRun]> {
+    if line_runs_x_sorted(&line.runs) {
+        Cow::Borrowed(&line.runs)
+    } else {
+        let mut runs = line.runs.clone();
+        runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
+        Cow::Owned(runs)
+    }
+}
+
 fn split_text_line_at_wide_gap(
     line: &TextLine,
     enable_tight_column_band: bool,
@@ -826,21 +849,20 @@ fn split_text_line_at_wide_gap(
     if line.runs.len() < 2 {
         return None;
     }
-    let mut runs = line.runs.clone();
-    runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
+    let runs = runs_sorted_by_x(line);
     let contains_math = runs
         .iter()
         .any(|run| looks_like_pdf_math_notation(&normalize_pdf_token(&run.text)));
     let tight_column_split_index = enable_tight_column_band
-        .then(|| tight_column_band_split_index_for_runs(&runs))
+        .then(|| tight_column_band_split_index_for_runs(&runs[..]))
         .flatten();
-    let largest_gap_split = largest_run_gap(&runs);
+    let largest_gap_split = largest_run_gap(&runs[..]);
     if contains_math && tight_column_split_index.is_none() {
         return None;
     }
     let split_index = match (tight_column_split_index, largest_gap_split) {
         (Some(tight_index), Some((wide_index, gap, x_jump)))
-            if prefers_wide_gap_before_tight_band(&runs, wide_index, tight_index, gap, x_jump) =>
+            if prefers_wide_gap_before_tight_band(&runs[..], wide_index, tight_index, gap, x_jump) =>
         {
             wide_index
         }
@@ -863,9 +885,8 @@ fn has_repeated_tight_column_band_evidence(lines: &[TextLine]) -> bool {
     lines
         .iter()
         .filter(|line| {
-            let mut runs = line.runs.clone();
-            runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
-            tight_column_band_split_index_for_runs(&runs).is_some()
+            let runs = runs_sorted_by_x(line);
+            tight_column_band_split_index_for_runs(&runs[..]).is_some()
         })
         .take(2)
         .count()
@@ -1245,7 +1266,7 @@ fn average_line_height(lines: &[TextLine]) -> f32 {
     total / lines.len() as f32
 }
 
-fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock> {
+fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> Option<TextBlock> {
     let text = text_from_line_runs(line);
     let text = clean_pdf_line_text(&text);
     if text.is_empty() {
@@ -1254,7 +1275,7 @@ fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock
 
     Some(TextBlock {
         text: text.clone(),
-        kind: classify_text_line(&text),
+        kind: classify_text_line(&text, line_dominant_size(line), body_size),
         bbox: Some(line.bbox),
         lines: vec![Line {
             text,
@@ -1286,9 +1307,8 @@ fn text_block_from_line(page_number: usize, line: &TextLine) -> Option<TextBlock
 }
 
 fn text_from_line_runs(line: &TextLine) -> String {
-    let mut runs = line.runs.clone();
-    runs.sort_by(|left, right| left.bbox.x.total_cmp(&right.bbox.x));
-    if !line_has_math_script_context(&runs) {
+    let runs = runs_sorted_by_x(line);
+    if !line_has_math_script_context(&runs[..]) {
         return runs
             .iter()
             .map(|run| run.text.trim())
@@ -1297,7 +1317,7 @@ fn text_from_line_runs(line: &TextLine) -> String {
             .join(" ");
     }
 
-    let Some(baseline_y) = dominant_baseline_y(&runs) else {
+    let Some(baseline_y) = dominant_baseline_y(&runs[..]) else {
         return runs
             .iter()
             .map(|run| run.text.trim())
@@ -1307,13 +1327,13 @@ fn text_from_line_runs(line: &TextLine) -> String {
     };
     let mut pieces: Vec<String> = Vec::new();
 
-    for run in runs {
+    for run in runs.iter() {
         let token = run.text.trim();
         if token.is_empty() {
             continue;
         }
 
-        if let Some(script) = script_kind_for_run(&run, baseline_y) {
+        if let Some(script) = script_kind_for_run(run, baseline_y) {
             if let Some(previous) = pieces.last_mut() {
                 if can_attach_math_script(previous, token) {
                     previous.push_str(&format_math_script(script, token));
@@ -1656,8 +1676,33 @@ fn normalize_pdf_token(token: &str) -> String {
         .replace("â\u{88}\u{91}", "∑")
         .replace(['‘', '’'], "'")
         .replace(['“', '”'], "\"");
+    let normalized = expand_latin_ligatures(&normalized);
     let normalized = repair_windows_1252_control_punctuation(&normalized);
     repair_embedded_pdf_control_glyphs(&normalized)
+}
+
+/// Expand Unicode Latin presentation-form ligatures (U+FB00–U+FB06) to their
+/// component ASCII letters. Some PDF producers map a ligature glyph's ToUnicode
+/// entry (or a `uniFB01`-style name) to the precomposed codepoint; leaving it in
+/// the output degrades downstream search and matching. NFC/NFD do not decompose
+/// these — only an explicit table (or NFKC) does.
+fn expand_latin_ligatures(text: &str) -> String {
+    if !text.chars().any(|character| ('\u{FB00}'..='\u{FB06}').contains(&character)) {
+        return text.to_owned();
+    }
+    let mut output = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\u{FB00}' => output.push_str("ff"),
+            '\u{FB01}' => output.push_str("fi"),
+            '\u{FB02}' => output.push_str("fl"),
+            '\u{FB03}' => output.push_str("ffi"),
+            '\u{FB04}' => output.push_str("ffl"),
+            '\u{FB05}' | '\u{FB06}' => output.push_str("st"),
+            other => output.push(other),
+        }
+    }
+    output
 }
 
 fn repair_windows_1252_control_punctuation(text: &str) -> String {
@@ -4132,12 +4177,69 @@ fn block_text(block: &Block) -> String {
     }
 }
 
-fn classify_text_line(text: &str) -> String {
-    if text.chars().count() < 120 && text.ends_with(':') {
-        "heading".to_owned()
+/// Classify a text line as a heading (`heading_1`..`heading_3`) or `paragraph`
+/// from its font size relative to the page body size. Headings on born-digital
+/// pages are typically set in a visibly larger size; the renderer maps
+/// `heading_N` to Markdown `#`*N and LaTeX `\section`/`\subsection`/etc.
+fn classify_text_line(text: &str, line_size: f32, body_size: f32) -> String {
+    let chars = text.chars().count();
+    // Long runs of text are body copy even if slightly larger; very short empty
+    // lines are not headings.
+    if chars == 0 || chars >= 200 || body_size <= 0.0 || line_size <= 0.0 {
+        return "paragraph".to_owned();
+    }
+    let ratio = line_size / body_size;
+    if ratio >= 1.5 {
+        "heading_1".to_owned()
+    } else if ratio >= 1.3 {
+        "heading_2".to_owned()
+    } else if ratio >= 1.12 {
+        "heading_3".to_owned()
     } else {
         "paragraph".to_owned()
     }
+}
+
+/// The font size of the dominant (longest by character count) run in a line.
+fn line_dominant_size(line: &TextLine) -> f32 {
+    let mut best_chars = 0usize;
+    let mut best_size = 0.0f32;
+    for run in &line.runs {
+        if run.size <= 0.0 {
+            continue;
+        }
+        let chars = run.text.chars().count();
+        if chars >= best_chars {
+            best_chars = chars;
+            best_size = run.size;
+        }
+    }
+    best_size
+}
+
+/// The page's body font size: the most common run size (in 0.5pt buckets),
+/// weighted by character count. Used as the baseline for heading detection.
+fn page_body_size(lines: &[TextLine]) -> f32 {
+    let mut weights: Vec<(u32, usize)> = Vec::new();
+    for line in lines {
+        for run in &line.runs {
+            if run.size <= 0.0 {
+                continue;
+            }
+            let bucket = (run.size * 2.0).round() as u32;
+            let chars = run.text.chars().count();
+            if let Some(entry) = weights.iter_mut().find(|(value, _)| *value == bucket) {
+                entry.1 += chars;
+            } else {
+                weights.push((bucket, chars));
+            }
+        }
+    }
+    weights
+        .into_iter()
+        .max_by_key(|(_, chars)| *chars)
+        .map(|(bucket, _)| bucket as f32 / 2.0)
+        .unwrap_or(0.0)
 }
 
 fn source_ids_for_line(line: &TextLine) -> Vec<String> {

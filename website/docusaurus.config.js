@@ -186,7 +186,7 @@ const config = {
     prism: {
       theme: lightCodeTheme,
       darkTheme: darkCodeTheme,
-      additionalLanguages: ["rust", "python", "bash", "json"],
+      additionalLanguages: ["rust", "python", "typescript", "bash", "json", "toml"],
     },
   },
 };

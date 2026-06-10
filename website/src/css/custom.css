@@ -160,6 +160,13 @@ body {
   max-width: none;
   padding: 0 1.5rem;
 }
+/* On the homepage the navbar tracks the hero container (1200px, centered) so the
+   brand lines up with the headline; docs keep the full-bleed bar. */
+html.plugin-pages .navbar__inner,
+html.dg-home .navbar__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+}
 .navbar__brand {
   margin-right: 1.25rem;
 }

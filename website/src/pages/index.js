@@ -22,7 +22,16 @@ import {
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/atom-one-dark.css";
 
+import HeroCanvas from "../components/HeroCanvas";
 import styles from "./index.module.css";
+
+function prefersReducedMotion() {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
 
 const siteUrl = "https://cristianexer.github.io/dongler";
 const seoDescription =
@@ -171,6 +180,12 @@ const formats = [
   "JSONL",
 ];
 
+// A seamless -50% marquee needs each half to be at least one viewport wide, or a
+// gap appears at the loop point and it reads as "stopped". Repeat the set so one
+// half comfortably exceeds any realistic viewport, then duplicate the half.
+const marqueeRow = [...formats, ...formats, ...formats];
+const marqueeChips = [...marqueeRow, ...marqueeRow];
+
 const pipeline = [
   {
     icon: faLayerGroup,
@@ -231,9 +246,34 @@ const languageCards = [
 
 function LanguageSwitcher() {
   const [active, setActive] = useState("python");
+  const [interacted, setInteracted] = useState(false);
+  const [paused, setPaused] = useState(false);
   const current = languages.find((l) => l.id === active) ?? languages[0];
+
+  // Auto-advance through the bindings so the "works everywhere" story plays on
+  // its own — until the visitor takes over, or hovers, or asks for less motion.
+  useEffect(() => {
+    if (interacted || paused || prefersReducedMotion()) return undefined;
+    const id = setInterval(() => {
+      setActive((cur) => {
+        const idx = languages.findIndex((l) => l.id === cur);
+        return languages[(idx + 1) % languages.length].id;
+      });
+    }, 3200);
+    return () => clearInterval(id);
+  }, [interacted, paused]);
+
+  const pick = (id) => {
+    setInteracted(true);
+    setActive(id);
+  };
+
   return (
-    <div className={styles.codeCard}>
+    <div
+      className={styles.codeCard}
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+    >
       <div className={styles.codeTabs} role="tablist" aria-label="Language">
         {languages.map((lang) => (
           <button
@@ -242,7 +282,7 @@ function LanguageSwitcher() {
             role="tab"
             aria-selected={lang.id === active}
             className={lang.id === active ? styles.codeTabActive : styles.codeTab}
-            onClick={() => setActive(lang.id)}
+            onClick={() => pick(lang.id)}
           >
             {lang.label}
           </button>
@@ -266,7 +306,12 @@ export default function Home() {
   const { siteConfig } = useDocusaurusContext();
   const version = siteConfig.customFields?.donglerVersion;
   useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") return;
+    // Flag the homepage so the navbar can track the hero container here while
+    // staying full-bleed on the docs.
+    document.documentElement.classList.add("dg-home");
+    if (typeof IntersectionObserver === "undefined") {
+      return () => document.documentElement.classList.remove("dg-home");
+    }
     document.documentElement.classList.add("dg-reveal-ready");
     const io = new IntersectionObserver(
       (entries) => {
@@ -280,7 +325,10 @@ export default function Home() {
       { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
     );
     document.querySelectorAll(".dg-reveal").forEach((el) => io.observe(el));
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      document.documentElement.classList.remove("dg-home");
+    };
   }, []);
   return (
     <Layout
@@ -301,6 +349,7 @@ export default function Home() {
       <main className={styles.page}>
         {/* ---------------------------------------------------------- hero */}
         <section className={styles.hero}>
+          <HeroCanvas className={styles.heroCanvas} />
           <div className={styles.heroGlow} aria-hidden="true" />
           <div className={styles.heroInner}>
             <div className={styles.heroCopy}>
@@ -354,7 +403,7 @@ export default function Home() {
         <section className={styles.marqueeWrap} aria-label="Supported input formats">
           <div className={styles.marqueeFade} />
           <div className={styles.marquee}>
-            {[...formats, ...formats].map((fmt, i) => (
+            {marqueeChips.map((fmt, i) => (
               <span className={styles.chip} key={`${fmt}-${i}`}>
                 {fmt}
               </span>

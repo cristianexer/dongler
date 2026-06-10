@@ -1,6 +1,6 @@
 {
   "name": "@cristianexer/dongler",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "Fast Rust-native PDF and document extraction for Node.js, with Markdown, LaTeX, and JSON output.",
   "author": "Daniel Fat",
   "license": "MIT",

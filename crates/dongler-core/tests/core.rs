@@ -571,6 +571,25 @@ fn load_path_applies_pdf_page_rotation_to_geometry() {
 }
 
 #[test]
+fn load_path_uses_font_ascent_descent_for_glyph_bbox() {
+    let path = write_temp_bytes("font-metrics.pdf", font_metrics_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    let block = match &document.pages[0].blocks[0] {
+        Block::Text(text) => text,
+        other => panic!("expected text block, got {other:?}"),
+    };
+    let height = block.bbox.unwrap().height;
+    // (ascent 900 - descent -300)/1000 * 12pt = 14.4, distinct from the 12.0
+    // flat-font-size box the extractor used before font metrics were applied.
+    assert!(
+        (height - 14.4).abs() < 0.6,
+        "bbox height {height} should reflect the font ascent/descent"
+    );
+}
+
+#[test]
 fn load_path_decodes_ascii85_flate_pdf_streams() {
     let path = write_temp_bytes("ascii85-flate.pdf", ascii85_flate_pdf());
 
@@ -2668,6 +2687,14 @@ end";
     .into_bytes();
     pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
     pdf
+}
+
+fn font_metrics_pdf() -> Vec<u8> {
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 12 Tf 72 720 Td (Metrics) Tj ET",
+        "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Custom /FontDescriptor 7 0 R >>\nendobj\n7 0 obj\n<< /Type /FontDescriptor /FontName /Custom /Flags 32 /Ascent 900 /Descent -300 >>\nendobj\n",
+    )
 }
 
 fn rotated_page_pdf(rotate: i32) -> Vec<u8> {

@@ -52,6 +52,9 @@ struct PageExtraction {
 struct TextRun {
     text: String,
     bbox: BBox,
+    /// Page-space y of the text baseline, kept separate from `bbox` (which now
+    /// spans ascent..descent) so super/subscript detection stays baseline-based.
+    baseline_y: f32,
     font: Option<String>,
     size: f32,
     bold: bool,
@@ -63,6 +66,7 @@ struct TextRun {
 struct TextLine {
     runs: Vec<TextRun>,
     bbox: BBox,
+    baseline_y: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +119,8 @@ struct FontDecoder {
     max_code_len: usize,
     bold: bool,
     italic: bool,
+    ascent: f32,
+    descent: f32,
 }
 
 impl FontDecoder {
@@ -722,16 +728,20 @@ fn push_text_run(
         return;
     }
 
-    let bbox = text_run_bbox(state, advance);
-    let (bold, italic) = state
-        .font_name
-        .as_ref()
-        .and_then(|name| fonts.get(name))
+    let font = state.font_name.as_ref().and_then(|name| fonts.get(name));
+    let (bold, italic) = font
         .map(|font| (font.bold, font.italic))
         .unwrap_or((false, false));
+    let (ascent, descent) = font
+        .map(|font| (font.ascent, font.descent))
+        .unwrap_or((0.75, -0.25));
+    let bbox = text_run_bbox(state, advance, ascent, descent);
+    let (base_x, base_y) = state.text_matrix.point(0.0, state.text_rise);
+    let (_, baseline_y) = state.ctm.point(base_x, base_y);
     extraction.text_runs.push(TextRun {
         text,
         bbox,
+        baseline_y,
         font: state.font_name.clone(),
         size: state.font_size,
         bold,
@@ -767,12 +777,17 @@ fn text_advance_width(
     ((base + spacing) * state.horizontal_scaling).max(0.0)
 }
 
-fn text_run_bbox(state: &GraphicsState, advance: f32) -> BBox {
+fn text_run_bbox(state: &GraphicsState, advance: f32, ascent: f32, descent: f32) -> BBox {
+    // Vertical extent from the font's ascent/descent (em-relative to the
+    // baseline) rather than a flat font-size box, so glyph boxes are tight and
+    // baseline-correct under scaling/rotation.
+    let bottom = state.text_rise + descent * state.font_size;
+    let top = state.text_rise + ascent * state.font_size;
     let corners = [
-        (0.0, state.text_rise),
-        (advance, state.text_rise),
-        (0.0, state.text_rise + state.font_size),
-        (advance, state.text_rise + state.font_size),
+        (0.0, bottom),
+        (advance, bottom),
+        (0.0, top),
+        (advance, top),
     ];
     let points = corners
         .into_iter()
@@ -1062,7 +1077,12 @@ fn is_likely_column_split_gap(left: &BBox, right: &BBox, gap: f32, x_jump: f32) 
 
 fn text_line_from_runs(runs: Vec<TextRun>) -> Option<TextLine> {
     let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
-    Some(TextLine { runs, bbox })
+    let baseline_y = runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32;
+    Some(TextLine {
+        runs,
+        bbox,
+        baseline_y,
+    })
 }
 
 fn prefers_wide_gap_before_tight_band(
@@ -1436,17 +1456,17 @@ fn dominant_baseline_y(runs: &[TextRun]) -> Option<f32> {
     let mut baselines = runs
         .iter()
         .filter(|run| run.size >= max_size * 0.8)
-        .map(|run| run.bbox.y)
+        .map(|run| run.baseline_y)
         .collect::<Vec<_>>();
     if baselines.is_empty() {
-        baselines = runs.iter().map(|run| run.bbox.y).collect();
+        baselines = runs.iter().map(|run| run.baseline_y).collect();
     }
     baselines.sort_by(|left, right| left.total_cmp(right));
     baselines.get(baselines.len() / 2).copied()
 }
 
 fn script_kind_for_run(run: &TextRun, baseline_y: f32) -> Option<ScriptKind> {
-    let delta = run.bbox.y - baseline_y;
+    let delta = run.baseline_y - baseline_y;
     let threshold = (run.size * 0.25).clamp(2.0, 4.0);
     if delta >= threshold {
         Some(ScriptKind::Superscript)
@@ -2554,6 +2574,7 @@ fn text_run_from_cell_runs(runs: &[TextRun]) -> Option<TextRun> {
     Some(TextRun {
         text,
         bbox,
+        baseline_y: runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32,
         font: runs.iter().find_map(|run| run.font.clone()),
         size: runs.iter().map(|run| run.size).sum::<f32>() / runs.len() as f32,
         bold: !runs.is_empty() && runs.iter().all(|run| run.bold),
@@ -2903,25 +2924,29 @@ fn rotate_bbox(bbox: BBox, rotation: i32, width: f32, height: f32) -> BBox {
 fn group_text_runs(mut runs: Vec<TextRun>) -> Vec<TextLine> {
     runs.sort_by(|left, right| {
         right
-            .bbox
-            .y
-            .total_cmp(&left.bbox.y)
+            .baseline_y
+            .total_cmp(&left.baseline_y)
             .then(left.bbox.x.total_cmp(&right.bbox.x))
     });
 
     let mut lines: Vec<TextLine> = Vec::new();
     for run in runs {
+        // Group by text baseline, not the visual bbox top, so a smaller-font
+        // super/subscript stays on its line even though its box (ascent/descent)
+        // differs from the body text.
         if let Some(line) = lines
             .iter_mut()
-            .find(|line| (line.bbox.y - run.bbox.y).abs() <= 3.0)
+            .find(|line| (line.baseline_y - run.baseline_y).abs() <= 3.0)
         {
-            // Extend the line bbox in O(1). The incremental AABB equals the full
-            // union over all runs, so the matching y used by `find` is identical
-            // to recomputing it from scratch each insert.
             line.bbox = union_boxes([line.bbox, run.bbox]).unwrap_or(line.bbox);
+            // Drift the line anchor toward the lowest baseline, matching the old
+            // union-of-boxes behavior, so following runs match the body baseline
+            // rather than a leading super/subscript.
+            line.baseline_y = line.baseline_y.min(run.baseline_y);
             line.runs.push(run);
         } else {
             lines.push(TextLine {
+                baseline_y: run.baseline_y,
                 bbox: run.bbox,
                 runs: vec![run],
             });
@@ -3592,6 +3617,7 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
     let encoding = font_encoding_differences(&font_body, object_map);
     let widths = font_widths(&font_body, &encoding);
     let (bold, italic) = font_style(&font_body, object_map);
+    let (ascent, descent) = font_vertical_metrics(&font_body, object_map);
     let Some(to_unicode_ref) = parse_refs_after_key(&font_body, "/ToUnicode")
         .into_iter()
         .next()
@@ -3603,6 +3629,8 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             max_code_len: 1,
             bold,
             italic,
+            ascent,
+            descent,
         };
     };
     let Some(to_unicode) = object_map.get(&(to_unicode_ref as u32)) else {
@@ -3613,6 +3641,8 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             max_code_len: 1,
             bold,
             italic,
+            ascent,
+            descent,
         };
     };
     let Ok(Some(cmap_stream)) = decode_stream_object(to_unicode) else {
@@ -3623,6 +3653,8 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
             max_code_len: 1,
             bold,
             italic,
+            ascent,
+            descent,
         };
     };
 
@@ -3631,7 +3663,33 @@ fn font_decoder(font: &PdfObject, object_map: &HashMap<u32, PdfObject>) -> FontD
     decoder.widths = widths;
     decoder.bold = bold;
     decoder.italic = italic;
+    decoder.ascent = ascent;
+    decoder.descent = descent;
     decoder
+}
+
+/// Font ascent/descent in em units (text-space fractions of the font size),
+/// from `/FontDescriptor` `/Ascent` and `/Descent` (glyph space, /1000). Falls
+/// back to typical Latin metrics when the descriptor is absent.
+fn font_vertical_metrics(font_body: &str, object_map: &HashMap<u32, PdfObject>) -> (f32, f32) {
+    let mut ascent = 0.75;
+    let mut descent = -0.25;
+    if let Some(descriptor_ref) = parse_direct_ref_after_key(font_body, "/FontDescriptor") {
+        if let Some(object) = object_map.get(&(descriptor_ref as u32)) {
+            let body = lossy(&object.body);
+            if let Some(value) = parse_number_after(&body, "/Ascent") {
+                if value != 0.0 {
+                    ascent = value / 1000.0;
+                }
+            }
+            if let Some(value) = parse_number_after(&body, "/Descent") {
+                if value != 0.0 {
+                    descent = value / 1000.0;
+                }
+            }
+        }
+    }
+    (ascent, descent)
 }
 
 /// Detect bold/italic for a font from its `/BaseFont` name (after stripping the
@@ -3853,6 +3911,8 @@ fn parse_to_unicode_cmap(text: &str) -> FontDecoder {
         max_code_len,
         bold: false,
         italic: false,
+        ascent: 0.75,
+        descent: -0.25,
     }
 }
 
@@ -4476,6 +4536,7 @@ mod tests {
                 width: 360.0,
                 height: 12.0,
             },
+            baseline_y: 720.0,
         };
 
         assert_eq!(
@@ -4493,6 +4554,7 @@ mod tests {
                 width: text.len() as f32 * size * 0.4,
                 height: size,
             },
+            baseline_y: y,
             font: None,
             size,
             bold: false,

@@ -93,6 +93,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace --locked
 
+  test-wasm:
+    name: Test WebAssembly
+    runs-on: ubuntu-latest
+    needs: [version]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo build -p dongler-wasm --target wasm32-unknown-unknown --locked
+
   test-python:
     name: Test Python
     runs-on: ubuntu-latest
@@ -212,7 +225,7 @@ jobs:
   package-artifacts:
     name: Build Package Artifacts
     runs-on: ubuntu-latest
-    needs: [version, release-checks, test-rust, test-python, test-node, docs-site, private-corpus]
+    needs: [version, release-checks, test-rust, test-wasm, test-python, test-node, docs-site, private-corpus]
     steps:
       - uses: actions/checkout@v4
         with:

@@ -44,6 +44,7 @@ def package_versions() -> list[tuple[str, str]]:
         ("crates/dongler-cli", read_toml("crates/dongler-cli/Cargo.toml")["package"]["version"]),
         ("crates/dongler-python", read_toml("crates/dongler-python/Cargo.toml")["package"]["version"]),
         ("crates/dongler-node", read_toml("crates/dongler-node/Cargo.toml")["package"]["version"]),
+        ("crates/dongler-wasm", read_toml("crates/dongler-wasm/Cargo.toml")["package"]["version"]),
         ("pyproject.toml", read_toml("pyproject.toml")["project"]["version"]),
         ("node/package.json", read_json("node/package.json")["version"]),
         ("website/package.json", read_json("website/package.json")["version"]),
@@ -65,7 +66,7 @@ def cargo_dependency_versions() -> list[tuple[str, str]]:
 
 def cargo_lock_versions() -> list[tuple[str, str | None]]:
     lock = read_toml("Cargo.lock")
-    wanted = {"dongler", "dongler-core", "dongler-python", "dongler-node"}
+    wanted = {"dongler", "dongler-core", "dongler-python", "dongler-node", "dongler-wasm"}
     found = {}
     for package in lock.get("package", []):
         if package.get("name") in wanted:

@@ -45,6 +45,11 @@ npm install @cristianexer/dongler      # Node / TypeScript
 
 For the Rust library, depend on `dongler-core`. The public `dongler` crate is the CLI package.
 
+To run extraction in the browser or another WebAssembly host, build the
+`dongler-wasm` crate (`make build-wasm`). It exposes the same engine over an
+in-memory byte API, so files can be parsed client-side with no server. See
+[`crates/dongler-wasm/README.md`](crates/dongler-wasm/README.md).
+
 ## Parse a PDF
 
 <table>

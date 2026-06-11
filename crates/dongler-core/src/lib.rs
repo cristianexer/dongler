@@ -63,60 +63,78 @@ pub fn load_path(path: impl AsRef<Path>) -> Result<Document> {
 pub fn load_path_with_options(path: impl AsRef<Path>, options: ExtractOptions) -> Result<Document> {
     let path = path.as_ref();
     let format = InputFormat::detect_path(path)?;
+    if format.extraction_status() == ExtractionStatus::Planned {
+        return Err(DonglerError::planned_format(format.as_str()));
+    }
 
-    let mut document = match format {
-        InputFormat::Text => {
-            let source = TextSourceLoader.load(path)?;
-            PlainTextEngine.extract(&source)
-        }
-        InputFormat::Pdf => {
-            let source = PdfSourceLoader.load(path)?;
-            PdfEngine.extract(&source)
-        }
-        InputFormat::Image => {
-            let source = ImageSourceLoader.load(path)?;
-            ImageEngine.extract(&source)
-        }
-        InputFormat::Archive => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            ArchiveEngine.extract(&source)
-        }
-        InputFormat::Word
-        | InputFormat::Excel
-        | InputFormat::Presentation
-        | InputFormat::OpenDocument => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            OpenXmlEngine.extract(&source)
-        }
-        InputFormat::Html => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            HtmlEngine.extract(&source)
-        }
-        InputFormat::Email => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            EmailEngine.extract(&source)
-        }
-        InputFormat::Xml => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            XmlEngine.extract(&source)
-        }
-        InputFormat::Json => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            JsonEngine.extract(&source)
-        }
-        InputFormat::Csv => {
-            let source = FormatSourceLoader::new(format).load(path)?;
-            CsvEngine.extract(&source)
-        }
-        InputFormat::LegacyWord
-        | InputFormat::LegacyExcel
-        | InputFormat::LegacyPresentation
-        | InputFormat::LegacyEmail => Err(DonglerError::planned_format(format.as_str())),
-    }?;
+    let source = load_source(format, path)?;
+    let mut document = engine_extract(format, &source)?;
 
     if ocr_fallback_enabled() {
         apply_ocr_fallback(&mut document);
     }
+    apply_extract_options(&mut document, &options);
+    Ok(document)
+}
+
+/// Read a source from disk using the loader appropriate for `format`.
+fn load_source(format: InputFormat, path: &Path) -> Result<Source> {
+    match format {
+        InputFormat::Text => TextSourceLoader.load(path),
+        InputFormat::Pdf => PdfSourceLoader.load(path),
+        InputFormat::Image => ImageSourceLoader.load(path),
+        _ => FormatSourceLoader::new(format).load(path),
+    }
+}
+
+/// Dispatch an in-memory source to the engine for `format`.
+///
+/// This is the filesystem-free heart of extraction, shared by the path-based
+/// loaders and the byte-based [`extract_bytes`] entry point used by wasm.
+fn engine_extract(format: InputFormat, source: &Source) -> Result<Document> {
+    match format {
+        InputFormat::Text => PlainTextEngine.extract(source),
+        InputFormat::Pdf => PdfEngine.extract(source),
+        InputFormat::Image => ImageEngine.extract(source),
+        InputFormat::Archive => ArchiveEngine.extract(source),
+        InputFormat::Word
+        | InputFormat::Excel
+        | InputFormat::Presentation
+        | InputFormat::OpenDocument => OpenXmlEngine.extract(source),
+        InputFormat::Html => HtmlEngine.extract(source),
+        InputFormat::Email => EmailEngine.extract(source),
+        InputFormat::Xml => XmlEngine.extract(source),
+        InputFormat::Json => JsonEngine.extract(source),
+        InputFormat::Csv => CsvEngine.extract(source),
+        InputFormat::LegacyWord
+        | InputFormat::LegacyExcel
+        | InputFormat::LegacyPresentation
+        | InputFormat::LegacyEmail => Err(DonglerError::planned_format(format.as_str())),
+    }
+}
+
+/// Extract a document from in-memory bytes, detecting the format from
+/// `filename` (its extension only — the file is never read from disk).
+///
+/// This is the primary entry point for environments without a filesystem,
+/// such as WebAssembly. OCR fallback is intentionally not applied here because
+/// it relies on spawning external processes.
+pub fn extract_bytes(bytes: &[u8], filename: &str) -> Result<Document> {
+    extract_bytes_with_options(bytes, filename, ExtractOptions::default())
+}
+
+pub fn extract_bytes_with_options(
+    bytes: &[u8],
+    filename: &str,
+    options: ExtractOptions,
+) -> Result<Document> {
+    let format = InputFormat::detect_path(filename)?;
+    if format.extraction_status() == ExtractionStatus::Planned {
+        return Err(DonglerError::planned_format(format.as_str()));
+    }
+
+    let source = Source::from_bytes_for_format(bytes, filename, format)?;
+    let mut document = engine_extract(format, &source)?;
     apply_extract_options(&mut document, &options);
     Ok(document)
 }

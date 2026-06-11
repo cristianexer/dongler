@@ -1,9 +1,13 @@
-.PHONY: test test-rust test-python test-js test-docs test-release build build-rust build-python build-js build-docs eval-data eval-smoke bench-data bench-run bench publish-dry-run
+.PHONY: test test-rust test-python test-js test-docs test-release test-wasm build build-rust build-python build-js build-docs build-wasm eval-data eval-smoke bench-data bench-run bench publish-dry-run
 
-test: test-release test-rust test-python test-js test-docs
+test: test-release test-rust test-python test-js test-docs test-wasm
 
 test-release:
 	python3 scripts/check-versions.py
+
+test-wasm:
+	rustup target add wasm32-unknown-unknown
+	cargo build -p dongler-wasm --target wasm32-unknown-unknown
 
 test-rust:
 	cargo test --workspace
@@ -23,10 +27,13 @@ test-docs:
 	cd website && NO_UPDATE_NOTIFIER=1 npm run build
 	python3 scripts/check-site-metadata.py website/build
 
-build: build-rust build-python build-js build-docs
+build: build-rust build-python build-js build-docs build-wasm
 
 build-rust:
 	cargo build -p dongler-core -p dongler
+
+build-wasm:
+	scripts/build-wasm.sh
 
 build-python:
 	uv build

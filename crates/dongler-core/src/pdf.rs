@@ -4,6 +4,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use flate2::read::ZlibDecoder;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
@@ -312,19 +313,27 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
         .collect();
     font_object_numbers.sort_unstable();
     font_object_numbers.dedup();
+    let decode_font = |number: u32| {
+        object_map
+            .get(&number)
+            .map(|font| (number, Arc::new(font_decoder(font.as_ref(), &object_map))))
+    };
+    #[cfg(feature = "parallel")]
     let font_cache: HashMap<u32, Arc<FontDecoder>> = font_object_numbers
         .into_par_iter()
-        .filter_map(|number| {
-            object_map
-                .get(&number)
-                .map(|font| (number, Arc::new(font_decoder(font.as_ref(), &object_map))))
-        })
+        .filter_map(decode_font)
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let font_cache: HashMap<u32, Arc<FontDecoder>> = font_object_numbers
+        .into_iter()
+        .filter_map(decode_font)
         .collect();
 
-    let page_extractions = page_seeds
-        .par_iter()
-        .map(|seed| extract_page(seed, &object_map, &font_cache))
-        .collect::<Vec<_>>();
+    let extract_one = |seed: &PageSeed| extract_page(seed, &object_map, &font_cache);
+    #[cfg(feature = "parallel")]
+    let page_extractions = page_seeds.par_iter().map(extract_one).collect::<Vec<_>>();
+    #[cfg(not(feature = "parallel"))]
+    let page_extractions = page_seeds.iter().map(extract_one).collect::<Vec<_>>();
 
     let mut pages = Vec::with_capacity(page_extractions.len());
     let mut all_text = String::new();

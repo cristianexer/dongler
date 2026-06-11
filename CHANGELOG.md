@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added a `dongler-wasm` crate with WebAssembly (`wasm32-unknown-unknown`)
+  bindings, so the extraction engine runs in the browser or any wasm host
+  directly from an in-memory byte buffer with no filesystem.
+- Added a filesystem-free `extract_bytes` API to `dongler-core` and made the
+  rayon-based parallel decoding optional behind a default `parallel` feature so
+  the core builds for threadless targets.
+
 ## 0.3.0
 
 - Expanded the Rust-native extraction engine to DOCX, XLSX, PPTX, OpenDocument,

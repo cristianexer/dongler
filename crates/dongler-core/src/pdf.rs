@@ -3459,17 +3459,18 @@ fn implied_table_cells(line: &TextLine) -> Vec<TextRun> {
         if let Some(previous) = current.last() {
             let gap = run.bbox.x - (previous.bbox.x + previous.bbox.width);
             // A `$` is a column-leading currency marker: a financial statement's
-            // total/first rows print each value column as a flush-left `$` with a
+            // total rows print each value column as a flush-left `$` with a
             // right-aligned number, so the gap from the previous column's number to
             // this `$` is small and would otherwise merge two columns into one cell
-            // (`$286,004 $—`) — and a row of merged cells then fails to align to the
-            // detected columns and drops out of the table as loose numbers. Force a
-            // cell boundary before any `$`-led run that follows a non-currency run
-            // (its own `$`-prefixed number stays attached: the number does not lead
-            // with `$`, so it is not split off here).
+            // (`$286,004 $—`) — a row of merged cells then fails to align to the
+            // detected columns and drops out as loose numbers. Force a cell boundary
+            // before any `$`-led run that follows a genuine preceding column.
             let starts_currency = run.text.trim_start().starts_with('$');
-            let previous_is_lone_currency = previous.text.trim() == "$";
-            if gap >= threshold || (starts_currency && !previous_is_lone_currency) {
+            // …unless the previous run is a lone marker this `$` completes: `$` +
+            // `30,737` is one value, and `(` + `$11,829)` is one negative value
+            // `($11,829)` — don't strand the opening paren in the previous cell.
+            let previous_attaches_currency = matches!(previous.text.trim(), "$" | "(" | "($");
+            if gap >= threshold || (starts_currency && !previous_attaches_currency) {
                 groups.push(std::mem::take(&mut current));
             }
         }

@@ -1299,6 +1299,24 @@ fn load_path_splits_dollar_prefixed_value_columns() {
         vec!["$ 7,153", "$ 14,974", "$ 12,587"],
         "the `$`-prefixed columns did not split into separate cells: {net_income:?}"
     );
+
+    // A negative value `(` + `$N)` groups as `($N)` — the opening paren is not
+    // stranded in the previous cell by the `$`-boundary rule.
+    let net_loss = table
+        .rows
+        .iter()
+        .find(|row| row[0] == "Net loss")
+        .expect("Net loss row stayed in the table");
+    let losses: Vec<&str> = net_loss[1..]
+        .iter()
+        .map(|cell| cell.trim())
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    assert_eq!(
+        losses,
+        vec!["($1,829)", "($2,242)", "($5,053)"],
+        "negative `($N)` values were split or stranded: {net_loss:?}"
+    );
 }
 
 #[test]
@@ -3538,8 +3556,22 @@ fn dollar_prefixed_columns_pdf() -> Vec<u8> {
         ("19,334", 357.4, 680.0),
         ("$", 398.0, 680.0),
         ("16,937", 409.4, 680.0),
+        // negative `$`-row: each value is `(` + `$N)` and must group as `($N)`,
+        // not strand the `(` in the previous cell.
+        // `(` abuts its `$N)` (one cell `($N)`); columns sit a clear gap apart so
+        // a real column boundary separates them (gap-break), as on a real page.
+        ("Net loss", 90.0, 664.0),
+        ("(", 297.7, 664.0),
+        ("$1,829)", 301.0, 664.0),
+        ("(", 355.0, 664.0),
+        ("$2,242)", 358.3, 664.0),
+        ("(", 412.0, 664.0),
+        ("$5,053)", 415.3, 664.0),
     ] {
-        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+        // Parens are string delimiters in a PDF content stream; escape the lone
+        // `(` and the trailing `)` of the negative figures so the stream is valid.
+        let escaped = text.replace('(', "\\(").replace(')', "\\)");
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET"));
     }
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",

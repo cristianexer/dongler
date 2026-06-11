@@ -1210,6 +1210,31 @@ fn load_path_merges_wrapped_row_label_into_one_row() {
 }
 
 #[test]
+fn load_path_keeps_long_labelled_data_row_in_table() {
+    // A data row with a >12-word label but real aligned figures must stay in the
+    // table — not be misclassified as a prose caption and ejected as loose text.
+    let path = write_temp_bytes("long-label-row.pdf", long_label_data_row_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a cash-flow table");
+
+    let effect = table
+        .rows
+        .iter()
+        .find(|row| row[0].starts_with("Effect of exchange rate changes"))
+        .expect("long-labelled row was ejected from the table");
+    assert_eq!(effect[1], "(141)");
+    assert_eq!(effect[2], "(444)");
+}
+
+#[test]
 fn load_path_rescues_periodic_subcolumns() {
     // The sparse Level 1/2/3 columns of a fair-value table (most rows are
     // Total-only) repeat periodically across both year groups, so they must be
@@ -3373,6 +3398,57 @@ fn multi_section_statement_pdf() -> Vec<u8> {
     ] {
         ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
     }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn long_label_data_row_pdf() -> Vec<u8> {
+    // A multi-section statement (so the columnar detector fires) whose cash-flow
+    // section contains a data row with a *long* label (>12 words) yet real
+    // aligned figures — "Effect of exchange rate changes …". It must stay a table
+    // row, not be misread as a prose caption and ejected as loose text.
+    let mut ops = Vec::new();
+    // Value columns sit far right (right edges 535 / 600) so even the long-labelled
+    // row keeps a clear gap before its first figure, as on a real wide statement.
+    let label = |ops: &mut Vec<String>, text: &str, y: f32| {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 90 {y} Tm ({text}) Tj ET"));
+    };
+    let figures = |ops: &mut Vec<String>, a: &str, b: &str, y: f32| {
+        for (value, right) in [(a, 535.0_f32), (b, 600.0_f32)] {
+            let x = right - value.chars().count() as f32 * 5.5;
+            ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({value}) Tj ET"));
+        }
+    };
+    let row = |ops: &mut Vec<String>, text: &str, a: &str, b: &str, y: f32| {
+        label(ops, text, y);
+        figures(ops, a, b, y);
+    };
+    label(&mut ops, "CONSOLIDATED STATEMENTS OF CASH FLOWS", 760.0);
+    figures(&mut ops, "2024", "2023", 742.0);
+    label(&mut ops, "Operating activities:", 726.0);
+    row(&mut ops, "Net income", "93,736", "96,995", 710.0);
+    row(&mut ops, "Depreciation and amortization", "11,445", "11,104", 694.0);
+    row(&mut ops, "Deferred income taxes", "4,738", "5,160", 678.0);
+    row(&mut ops, "Stock-based compensation expense", "11,688", "10,833", 662.0);
+    row(&mut ops, "Changes in operating assets", "3,250", "2,500", 646.0);
+    label(&mut ops, "Financing activities:", 630.0);
+    row(&mut ops, "Repurchases of common stock", "94,949", "77,550", 614.0);
+    row(&mut ops, "Dividends and dividend equivalents paid", "15,234", "14,467", 598.0);
+    row(&mut ops, "Proceeds from issuance of term debt", "5,228", "5,465", 582.0);
+    row(&mut ops, "Net cash used in financing activities", "108,488", "110,749", 566.0);
+    // The long-labelled row (13 words) with real two-column figures.
+    row(
+        &mut ops,
+        "Effect of exchange rate changes on cash and cash equivalents and restricted items",
+        "(141)",
+        "(444)",
+        550.0,
+    );
+    row(&mut ops, "Net increase in cash", "1,016", "2,272", 534.0);
+    label(&mut ops, "See accompanying notes.", 510.0);
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         &ops.join("\n"),

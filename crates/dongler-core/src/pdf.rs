@@ -2567,6 +2567,15 @@ fn is_value_cell(text: &str) -> bool {
 /// than a label or a figure. Table captions and intro sentences sit near tables
 /// and carry years/figures, but must not vote for columns or join the header.
 fn cells_contain_prose(cells: &[TextRun]) -> bool {
+    // A real data row — even one with a long wrapped label ("Effect of exchange
+    // rate changes on cash and cash equivalents and restricted cash") — carries
+    // its figures in two or more *separate* aligned value cells. A prose caption
+    // ("The following table presents … for 2024, 2023 …") keeps its numbers inline
+    // in one many-word cell, so after splitting it has at most one value cell.
+    // Only the latter is prose; never drop a multi-figure data row as a caption.
+    if cells.iter().filter(|cell| is_value_cell(&cell.text)).count() >= 2 {
+        return false;
+    }
     cells.iter().any(|cell| {
         cell.text
             .split_whitespace()

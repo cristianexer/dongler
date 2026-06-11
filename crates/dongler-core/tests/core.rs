@@ -1199,6 +1199,40 @@ fn load_path_merges_wrapped_row_label_into_one_row() {
 }
 
 #[test]
+fn load_path_splits_dollar_prefixed_value_columns() {
+    // A total/first row where each value column carries its own flush-left `$`
+    // must split into one cell per value — not glue adjacent columns together
+    // (`$7,153 $14,974`) and then drop out of the table as loose numbers.
+    let path = write_temp_bytes("dollar-columns.pdf", dollar_prefixed_columns_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a statement table");
+
+    let net_income = table
+        .rows
+        .iter()
+        .find(|row| row[0] == "Net income")
+        .expect("Net income row stayed in the table");
+    let values: Vec<&str> = net_income[1..]
+        .iter()
+        .map(String::as_str)
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["$ 7,153", "$ 14,974", "$ 12,587"],
+        "the `$`-prefixed columns did not split into separate cells: {net_income:?}"
+    );
+}
+
+#[test]
 fn load_path_detects_multiple_tables_on_one_page() {
     // A page that stacks two statements must yield two table blocks — detection
     // runs repeatedly, so the second schedule is recovered instead of being
@@ -3282,6 +3316,56 @@ fn multi_section_statement_pdf() -> Vec<u8> {
         ("93,736", 329.7, 550.0),
         ("96,995", 429.7, 550.0),
         ("See accompanying notes.", 90.0, 526.0),
+    ] {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn dollar_prefixed_columns_pdf() -> Vec<u8> {
+    // A statement whose total/first rows print each value column as a flush-left
+    // `$` with a right-aligned number, columns packed so the gap from one column's
+    // number to the next column's `$` is small. The `$`-rows must split into one
+    // cell per value (not merge `$7,153 $14,974` into one cell).
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        // Header: right-aligned years over the three columns.
+        ("2025", 312.8, 760.0),
+        ("2024", 365.8, 760.0),
+        ("2023", 417.8, 760.0),
+        // `$`-row (first/total): flush-left `$` + right-aligned number per column.
+        ("Net income", 90.0, 744.0),
+        ("$", 300.0, 744.0),
+        ("7,153", 310.0, 744.0),
+        ("$", 345.0, 744.0),
+        ("14,974", 357.4, 744.0),
+        ("$", 398.0, 744.0),
+        ("12,587", 409.4, 744.0),
+        // plain rows: right-aligned numbers, no `$`.
+        ("Depreciation", 90.0, 728.0),
+        ("1,200", 310.0, 728.0),
+        ("1,300", 363.0, 728.0),
+        ("1,400", 415.0, 728.0),
+        ("Amortization", 90.0, 712.0),
+        ("980", 318.0, 712.0),
+        ("1,010", 363.0, 712.0),
+        ("1,050", 415.0, 712.0),
+        ("Stock-based compensation", 90.0, 696.0),
+        ("2,100", 310.0, 696.0),
+        ("2,050", 363.0, 696.0),
+        ("1,900", 415.0, 696.0),
+        // closing `$`-row (total).
+        ("Net cash from operations", 90.0, 680.0),
+        ("$", 300.0, 680.0),
+        ("11,433", 309.4, 680.0),
+        ("$", 345.0, 680.0),
+        ("19,334", 357.4, 680.0),
+        ("$", 398.0, 680.0),
+        ("16,937", 409.4, 680.0),
     ] {
         ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
     }

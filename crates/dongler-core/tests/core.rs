@@ -1210,6 +1210,39 @@ fn load_path_merges_wrapped_row_label_into_one_row() {
 }
 
 #[test]
+fn load_path_rescues_periodic_subcolumns() {
+    // The sparse Level 1/2/3 columns of a fair-value table (most rows are
+    // Total-only) repeat periodically across both year groups, so they must be
+    // recovered even though the support vote alone would drop them.
+    let path = write_temp_bytes("fair-value-subcolumns.pdf", fair_value_subcolumns_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a fair-value table");
+
+    // Eight value columns (Total/L1/L2/L3 x two years) plus the label column.
+    let width = table
+        .rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or_default();
+    assert!(width >= 9, "expected >= 9 columns (label + 8 values), got {width}");
+
+    // The sparse Level 3 figures land in their own cells rather than being
+    // dropped or merged into a neighbour.
+    let corporate = table.rows.iter().find(|row| row[0] == "Corporate").expect("Corporate row");
+    assert!(corporate.iter().any(|cell| cell == "132"), "L3 (2024) missing: {corporate:?}");
+    assert!(corporate.iter().any(|cell| cell == "141"), "L3 (2023) missing: {corporate:?}");
+}
+
+#[test]
 fn load_path_splits_dollar_prefixed_value_columns() {
     // A total/first row where each value column carries its own flush-left `$`
     // must split into one cell per value — not glue adjacent columns together
@@ -3339,6 +3372,48 @@ fn multi_section_statement_pdf() -> Vec<u8> {
         ("See accompanying notes.", 90.0, 526.0),
     ] {
         ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn fair_value_subcolumns_pdf() -> Vec<u8> {
+    // A fair-value table: two year groups of (Total | Level 1 | Level 2 | Level 3)
+    // = 8 value columns, but the Level columns are SPARSE — only the first three
+    // rows carry them; the rest are Total-only. The 35% support vote drops the
+    // Level columns, but they repeat periodically across both year groups, so the
+    // rescue pass must recover them. Right edges: y1 Total 230 / L1 280 / L2 330 /
+    // L3 380; y2 Total 430 / L1 480 / L2 530 / L3 580. Every value is 3 digits
+    // (~16.7pt wide at size 9) right-aligned to its column.
+    let mut ops = Vec::new();
+    let push = |ops: &mut Vec<String>, text: &str, right: f32, y: f32| {
+        let x = right - 16.7;
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    };
+    // Three full rows (carry the sparse Level columns).
+    let full = [
+        ("Corporate", [613.0, 581.0, 600.0, 132.0, 816.0, 775.0, 800.0, 141.0]),
+        ("Sovereign", [924.0, 900.0, 911.0, 113.0, 720.0, 700.0, 710.0, 110.0]),
+        ("Municipal", [783.0, 611.0, 622.0, 172.0, 505.0, 344.0, 355.0, 161.0]),
+    ];
+    let edges = [230.0, 280.0, 330.0, 380.0, 430.0, 480.0, 530.0, 580.0];
+    let mut y = 740.0;
+    for (label, values) in full {
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 70 {y} Tm ({label}) Tj ET"));
+        for (value, edge) in values.iter().zip(edges) {
+            push(&mut ops, &format!("{}", *value as i32), edge, y);
+        }
+        y -= 16.0;
+    }
+    // Nine Total-only rows (so the Level columns stay below the 35% vote).
+    for index in 0..9 {
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 70 {y} Tm (Holding {index}) Tj ET"));
+        push(&mut ops, &format!("{}", 200 + index), 230.0, y);
+        push(&mut ops, &format!("{}", 300 + index), 430.0, y);
+        y -= 16.0;
     }
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",

@@ -2414,7 +2414,21 @@ fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Opti
     }
 
     let min_support = ((data_rows as f32) * 0.35).ceil().max(3.0) as usize;
-    let columns = cluster_column_right_edges(&right_edges, 8.0, min_support);
+    let all_clusters = cluster_column_right_edges_with_support(&right_edges, 8.0);
+    let mut columns: Vec<f32> = all_clusters
+        .iter()
+        .filter(|(_, support)| *support >= min_support)
+        .map(|(position, _)| *position)
+        .collect();
+    // Recover sparse-but-periodic sub-columns (paired Shares/Amount, fair-value
+    // Level 1/2/3) that the support vote drops; a no-op for plain N-year tables.
+    columns.extend(rescue_periodic_subcolumns(
+        &all_clusters,
+        &columns,
+        min_support,
+        data_rows,
+    ));
+    columns.sort_by(f32::total_cmp);
     if columns.len() < 2 {
         return None;
     }
@@ -2562,25 +2576,100 @@ fn cells_contain_prose(cells: &[TextRun]) -> bool {
     })
 }
 
-/// Cluster right-edge x positions into columns: sort, split where consecutive
-/// values differ by more than `tol`, keep clusters with enough rows behind them,
-/// and return each surviving cluster's median position (sorted left→right).
-fn cluster_column_right_edges(values: &[f32], tol: f32, min_support: usize) -> Vec<f32> {
+/// Every right-edge cluster with its support (the row count behind it), sorted
+/// left→right. Lets a caller keep the well-supported columns *and* selectively
+/// rescue sparse ones, rather than dropping everything below a single threshold.
+fn cluster_column_right_edges_with_support(values: &[f32], tol: f32) -> Vec<(f32, usize)> {
     let mut sorted = values.to_vec();
     sorted.sort_by(f32::total_cmp);
-    let mut columns: Vec<f32> = Vec::new();
+    let mut clusters: Vec<(f32, usize)> = Vec::new();
     let mut start = 0usize;
     for index in 1..=sorted.len() {
         let split = index == sorted.len() || sorted[index] - sorted[index - 1] > tol;
         if split {
             let cluster = &sorted[start..index];
-            if cluster.len() >= min_support {
-                columns.push(cluster[cluster.len() / 2]);
+            if !cluster.is_empty() {
+                clusters.push((cluster[cluster.len() / 2], cluster.len()));
             }
             start = index;
         }
     }
-    columns
+    clusters
+}
+
+/// Revive geometrically-clean but *sparse* sub-columns that the support vote
+/// drops — the paired Shares/Amount of a change-in-equity statement, or the
+/// Level 1/2/3 of a fair-value hierarchy, where most rows carry only the dense
+/// (Amount/Total) column. A dropped cluster is rescued only when it *repeats
+/// periodically* across the column groups: bucket the sparse interior clusters
+/// by their offset within the group pitch and keep an offset class that recurs
+/// in two or more groups. That is the fingerprint of a real sub-column; row-label
+/// noise is aperiodic and single-hit, so it is never revived. By construction a
+/// plain N-year table (every value column dense) has nothing to rescue — a no-op.
+fn rescue_periodic_subcolumns(
+    all_clusters: &[(f32, usize)],
+    kept: &[f32],
+    min_support: usize,
+    data_rows: usize,
+) -> Vec<f32> {
+    if kept.len() < 2 {
+        return Vec::new();
+    }
+    let floor = ((data_rows as f32) * 0.15).ceil().max(3.0) as usize;
+    if floor >= min_support {
+        return Vec::new();
+    }
+    let mut diffs: Vec<f32> = kept.windows(2).map(|window| window[1] - window[0]).collect();
+    diffs.sort_by(f32::total_cmp);
+    let pitch = diffs[diffs.len() / 2];
+    if pitch <= 0.0 {
+        return Vec::new();
+    }
+    let anchor = kept[0];
+    let (first, last) = (kept[0], kept[kept.len() - 1]);
+
+    // Sparse-but-not-noise clusters sitting inside the numeric grid.
+    let candidates: Vec<f32> = all_clusters
+        .iter()
+        .filter(|(position, support)| {
+            *support >= floor
+                && *support < min_support
+                && *position >= first - pitch
+                && *position <= last + pitch
+        })
+        .map(|(position, _)| *position)
+        .collect();
+
+    let residue = |position: f32| ((position - anchor) % pitch + pitch) % pitch;
+    let group_of = |position: f32| ((position - anchor) / pitch).round() as i32;
+
+    let mut rescued = Vec::new();
+    let mut used = vec![false; candidates.len()];
+    for index in 0..candidates.len() {
+        if used[index] {
+            continue;
+        }
+        let target = residue(candidates[index]);
+        let mut class = vec![index];
+        for other in (index + 1)..candidates.len() {
+            if used[other] {
+                continue;
+            }
+            let delta = (target - residue(candidates[other])).abs();
+            if delta.min(pitch - delta) <= 8.0 {
+                class.push(other);
+            }
+        }
+        let groups: std::collections::HashSet<i32> =
+            class.iter().map(|&member| group_of(candidates[member])).collect();
+        if class.len() >= 2 && groups.len() >= 2 {
+            for &member in &class {
+                used[member] = true;
+                rescued.push(candidates[member]);
+            }
+        }
+    }
+    rescued
 }
 
 /// Index of the column whose right edge is within tolerance of `right_edge`.

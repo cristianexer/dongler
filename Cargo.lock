@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "dongler"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "dongler-core",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-core"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "flate2",
  "rayon",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-node"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "dongler-core",
  "napi",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-python"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "dongler-core",
  "pyo3",

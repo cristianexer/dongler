@@ -285,7 +285,7 @@ fn load_path_extracts_markdown_headings_and_tables() {
     assert!(latex.contains("\\subsection{Details}"));
     assert!(latex.contains("\\begin{itemize}"));
     assert!(latex.contains("\\item first"));
-    assert!(latex.contains("\\begin{tabular}{ll}"));
+    assert!(latex.contains("\\begin{tabular}{lr}"));
     match &document.pages[0].blocks[0] {
         Block::Text(block) => {
             assert_eq!(block.kind, "heading_1");
@@ -362,7 +362,7 @@ Alpha & 42 \\
     assert!(latex.contains("100\\% of effort"));
     assert!(latex.contains("\\begin{itemize}"));
     assert!(latex.contains("\\item second result"));
-    assert!(latex.contains("\\begin{tabular}{ll}"));
+    assert!(latex.contains("\\begin{tabular}{lr}"));
 
     match &document.pages[0].blocks[0] {
         Block::Text(block) => {
@@ -769,6 +769,17 @@ fn load_path_reads_cidfont_w_widths_for_word_spacing() {
 }
 
 #[test]
+fn load_path_keeps_grouped_number_whole() {
+    let path = write_temp_bytes("split-number.pdf", split_grouped_number_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    // The number's two digit runs abut at a sub-word gap; a digit-to-digit
+    // boundary is a numeric continuation, so it must not be torn into "79,1 13".
+    assert_eq!(document.to_markdown().unwrap(), "79,113");
+}
+
+#[test]
 fn load_path_repairs_pdf_word_piece_spacing_and_punctuation() {
     let path = write_temp_bytes("word-piece-spacing.pdf", word_piece_spacing_pdf());
 
@@ -1112,6 +1123,14 @@ fn load_path_keeps_multi_section_statement_as_one_table() {
         })
         .expect("expected a single table spanning all sections");
 
+    // The period header (years) is promoted to the header row; the statement
+    // *title* above it stays out of the header (not pulled into the label column).
+    assert_eq!(table.headers, vec!["".to_owned(), "2024".to_owned(), "2023".to_owned()]);
+    assert!(
+        table.rows.iter().all(|row| row[0] != "CONSOLIDATED STATEMENTS OF OPERATIONS"),
+        "statement title leaked into a table row"
+    );
+
     let labels: Vec<&str> = table.rows.iter().map(|row| row[0].as_str()).collect();
     assert!(labels.contains(&"Operating activities:"), "missing first section header: {labels:?}");
     assert!(labels.contains(&"Operating expenses:"), "missing later section header: {labels:?}");
@@ -1124,6 +1143,216 @@ fn load_path_keeps_multi_section_statement_as_one_table() {
     // A section header is a label-only row (its numeric columns are empty).
     let section = table.rows.iter().find(|row| row[0] == "Operating expenses:").unwrap();
     assert!(section[1..].iter().all(|cell| cell.is_empty()));
+}
+
+#[test]
+fn load_path_extracts_wide_numeric_table_without_section_headers() {
+    // A wide table (>= 5 numeric columns: segment/geography breakdown) has no
+    // section-header rows, so the multi-section path does not apply — but the
+    // exact/implied detectors cannot assemble it either. The columnar detector
+    // takes it on the strength of its column count alone.
+    let path = write_temp_bytes("wide-table.pdf", wide_numeric_table_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a wide columnar table");
+
+    assert!(table.headers.len() >= 6, "expected >= 6 columns, got {}", table.headers.len());
+    // The prose caption above the table (a many-word sentence carrying "2024")
+    // neither pollutes the header nor becomes a row nor scatters phantom columns.
+    assert!(
+        table.headers.iter().chain(table.rows.iter().flatten()).all(|cell| !cell.contains("following table")),
+        "prose caption leaked into the table"
+    );
+    let north = table.rows.iter().find(|row| row[0] == "North America").expect("North America row");
+    assert_eq!(north[1], "4,200");
+    assert_eq!(north[6], "6,500");
+    let total = table.rows.iter().find(|row| row[0] == "Total").expect("Total row");
+    assert_eq!(total[1], "12,000");
+    assert_eq!(total[6], "19,970");
+}
+
+#[test]
+fn load_path_merges_wrapped_row_label_into_one_row() {
+    // A long row label that wrapped onto a previous line ("… beginning of" /
+    // "period 12,345 …") must merge back into the figure row, and a section header
+    // above an item must NOT be swallowed.
+    let path = write_temp_bytes("wrapped-label.pdf", wrapped_label_statement_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a single statement table");
+
+    let labels: Vec<&str> = table.rows.iter().map(|row| row[0].as_str()).collect();
+    assert!(
+        labels.contains(&"Cash and cash equivalents and restricted cash, beginning of period"),
+        "wrapped label was not merged: {labels:?}"
+    );
+    // The wrap continuation is not left as its own stray row.
+    assert!(!labels.iter().any(|label| *label == "period"), "stray wrap tail row: {labels:?}");
+    // The section header keeps its own label-only row (not merged into an item).
+    let operating = table.rows.iter().find(|row| row[0] == "Operating activities:").unwrap();
+    assert!(operating[1..].iter().all(|cell| cell.is_empty()));
+    let net_income = table.rows.iter().find(|row| row[0] == "Net income").expect("Net income row");
+    assert_eq!(net_income[1], "5,000");
+}
+
+#[test]
+fn load_path_keeps_long_labelled_data_row_in_table() {
+    // A data row with a >12-word label but real aligned figures must stay in the
+    // table — not be misclassified as a prose caption and ejected as loose text.
+    let path = write_temp_bytes("long-label-row.pdf", long_label_data_row_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a cash-flow table");
+
+    let effect = table
+        .rows
+        .iter()
+        .find(|row| row[0].starts_with("Effect of exchange rate changes"))
+        .expect("long-labelled row was ejected from the table");
+    assert_eq!(effect[1], "(141)");
+    assert_eq!(effect[2], "(444)");
+}
+
+#[test]
+fn load_path_rescues_periodic_subcolumns() {
+    // The sparse Level 1/2/3 columns of a fair-value table (most rows are
+    // Total-only) repeat periodically across both year groups, so they must be
+    // recovered even though the support vote alone would drop them.
+    let path = write_temp_bytes("fair-value-subcolumns.pdf", fair_value_subcolumns_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a fair-value table");
+
+    // Eight value columns (Total/L1/L2/L3 x two years) plus the label column.
+    let width = table
+        .rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or_default();
+    assert!(width >= 9, "expected >= 9 columns (label + 8 values), got {width}");
+
+    // The sparse Level 3 figures land in their own cells rather than being
+    // dropped or merged into a neighbour.
+    let corporate = table.rows.iter().find(|row| row[0] == "Corporate").expect("Corporate row");
+    assert!(corporate.iter().any(|cell| cell == "132"), "L3 (2024) missing: {corporate:?}");
+    assert!(corporate.iter().any(|cell| cell == "141"), "L3 (2023) missing: {corporate:?}");
+}
+
+#[test]
+fn load_path_splits_dollar_prefixed_value_columns() {
+    // A total/first row where each value column carries its own flush-left `$`
+    // must split into one cell per value — not glue adjacent columns together
+    // (`$7,153 $14,974`) and then drop out of the table as loose numbers.
+    let path = write_temp_bytes("dollar-columns.pdf", dollar_prefixed_columns_pdf());
+    let document = load_path(&path).unwrap();
+
+    let table = document.pages[0]
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("expected a statement table");
+
+    let net_income = table
+        .rows
+        .iter()
+        .find(|row| row[0] == "Net income")
+        .expect("Net income row stayed in the table");
+    let values: Vec<&str> = net_income[1..]
+        .iter()
+        .map(String::as_str)
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["$ 7,153", "$ 14,974", "$ 12,587"],
+        "the `$`-prefixed columns did not split into separate cells: {net_income:?}"
+    );
+
+    // A negative value `(` + `$N)` groups as `($N)` — the opening paren is not
+    // stranded in the previous cell by the `$`-boundary rule.
+    let net_loss = table
+        .rows
+        .iter()
+        .find(|row| row[0] == "Net loss")
+        .expect("Net loss row stayed in the table");
+    let losses: Vec<&str> = net_loss[1..]
+        .iter()
+        .map(|cell| cell.trim())
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    assert_eq!(
+        losses,
+        vec!["($1,829)", "($2,242)", "($5,053)"],
+        "negative `($N)` values were split or stranded: {net_loss:?}"
+    );
+}
+
+#[test]
+fn load_path_detects_multiple_tables_on_one_page() {
+    // A page that stacks two statements must yield two table blocks — detection
+    // runs repeatedly, so the second schedule is recovered instead of being
+    // shredded into loose numeric lines by the prose column reader.
+    let path = write_temp_bytes("two-stacked-tables.pdf", two_stacked_tables_pdf());
+    let document = load_path(&path).unwrap();
+
+    let tables: Vec<&dongler_core::ir::TableBlock> = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tables.len(), 2, "expected two stacked tables, got {}", tables.len());
+
+    let cells: Vec<&str> = tables
+        .iter()
+        .flat_map(|table| table.rows.iter())
+        .map(|row| row[0].as_str())
+        .collect();
+    assert!(cells.contains(&"Total current assets"), "missing assets table: {cells:?}");
+    assert!(cells.contains(&"Total debt"), "missing debt table: {cells:?}");
+
+    // Both schedules keep their figures aligned to their labels (not detached).
+    let assets = tables
+        .iter()
+        .find(|table| table.rows.iter().any(|row| row[0] == "Total current assets"))
+        .unwrap();
+    let total_assets = assets.rows.iter().find(|row| row[0] == "Total current assets").unwrap();
+    assert_eq!(total_assets[1], "25,900");
+    assert_eq!(total_assets[2], "23,900");
 }
 
 #[test]
@@ -2894,6 +3123,16 @@ fn script_geometry_pdf() -> Vec<u8> {
     )
 }
 
+fn split_grouped_number_pdf() -> Vec<u8> {
+    // A single grouped number rendered as two abutting digit runs ("79,1" then
+    // "13" a hair's gap apart) — must read back as "79,113", not "79,1 13".
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 10 Tf 1 0 0 1 200 720 Tm (79,1) Tj 1 0 0 1 218.6 720 Tm (13) Tj ET",
+        "",
+    )
+}
+
 fn offset_numeric_cells_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
@@ -3022,6 +3261,117 @@ fn table_with_surrounding_text_pdf() -> Vec<u8> {
     )
 }
 
+fn wrapped_label_statement_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    // The opening row's label wraps: a long first line with no figures, then a
+    // short tail ("period") that carries the figures, hanging-indented.
+    for (text, x, y) in [
+        ("STATEMENTS OF CASH FLOWS", 90.0, 760.0),
+        ("2024", 337.8, 742.0),
+        ("2023", 437.8, 742.0),
+        ("Cash and cash equivalents and restricted cash, beginning of", 90.0, 726.0),
+        ("period", 98.0, 712.0),
+        ("12,345", 329.7, 712.0),
+        ("11,000", 429.7, 712.0),
+        ("Operating activities:", 90.0, 696.0),
+        ("Net income", 98.0, 680.0),
+        ("5,000", 335.3, 680.0),
+        ("4,800", 435.3, 680.0),
+        ("Depreciation", 98.0, 664.0),
+        ("1,200", 335.3, 664.0),
+        ("1,150", 435.3, 664.0),
+        ("Deferred taxes", 98.0, 648.0),
+        ("300", 343.3, 648.0),
+        ("250", 443.3, 648.0),
+        ("Inventories", 98.0, 632.0),
+        ("(400)", 336.7, 632.0),
+        ("150", 443.3, 632.0),
+        ("Accounts payable", 98.0, 616.0),
+        ("600", 343.3, 616.0),
+        ("(200)", 436.7, 616.0),
+        ("Investing activities:", 90.0, 600.0),
+        ("Capital expenditures", 98.0, 584.0),
+        ("(2,000)", 328.6, 584.0),
+        ("(1,800)", 428.6, 584.0),
+        ("Acquisitions", 98.0, 568.0),
+        ("(500)", 336.7, 568.0),
+        ("(300)", 436.7, 568.0),
+        ("Net income", 98.0, 552.0),
+        ("5,000", 335.3, 552.0),
+        ("4,800", 435.3, 552.0),
+        ("See notes.", 90.0, 536.0),
+    ] {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn wide_numeric_table_pdf() -> Vec<u8> {
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        ("The following table presents segment revenue in millions for 2024 across all regions and markets", 70.0, 752.0),
+        ("2024", 210.0, 738.0),
+        ("2024", 270.0, 738.0),
+        ("2024", 330.0, 738.0),
+        ("2024", 390.0, 738.0),
+        ("2024", 450.0, 738.0),
+        ("2024", 520.0, 738.0),
+        ("North America", 70.0, 722.0),
+        ("4,200", 207.7, 722.0),
+        ("1,100", 267.7, 722.0),
+        ("300", 335.0, 722.0),
+        ("500", 395.0, 722.0),
+        ("900", 455.0, 722.0),
+        ("6,500", 517.7, 722.0),
+        ("Europe", 70.0, 707.0),
+        ("3,100", 207.7, 707.0),
+        ("800", 275.0, 707.0),
+        ("210", 335.0, 707.0),
+        ("150", 395.0, 707.0),
+        ("600", 455.0, 707.0),
+        ("4,650", 517.7, 707.0),
+        ("Asia Pacific", 70.0, 692.0),
+        ("2,700", 207.7, 692.0),
+        ("950", 275.0, 692.0),
+        ("220", 335.0, 692.0),
+        ("90", 400.0, 692.0),
+        ("400", 455.0, 692.0),
+        ("3,960", 517.7, 692.0),
+        ("Latin America", 70.0, 677.0),
+        ("1,200", 207.7, 677.0),
+        ("300", 275.0, 677.0),
+        ("80", 340.0, 677.0),
+        ("60", 400.0, 677.0),
+        ("150", 455.0, 677.0),
+        ("1,730", 517.7, 677.0),
+        ("Middle East", 70.0, 662.0),
+        ("800", 215.0, 662.0),
+        ("200", 275.0, 662.0),
+        ("70", 340.0, 662.0),
+        ("40", 400.0, 662.0),
+        ("90", 460.0, 662.0),
+        ("1,130", 517.7, 662.0),
+        ("Total", 70.0, 647.0),
+        ("12,000", 202.7, 647.0),
+        ("3,350", 267.7, 647.0),
+        ("880", 335.0, 647.0),
+        ("840", 395.0, 647.0),
+        ("2,140", 447.7, 647.0),
+        ("19,970", 512.7, 647.0),
+    ] {
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
 fn multi_section_statement_pdf() -> Vec<u8> {
     let mut ops = Vec::new();
     // Realistic Helvetica (size 10) layout: right-aligned figures in two columns,
@@ -3063,6 +3413,211 @@ fn multi_section_statement_pdf() -> Vec<u8> {
         ("93,736", 329.7, 550.0),
         ("96,995", 429.7, 550.0),
         ("See accompanying notes.", 90.0, 526.0),
+    ] {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn long_label_data_row_pdf() -> Vec<u8> {
+    // A multi-section statement (so the columnar detector fires) whose cash-flow
+    // section contains a data row with a *long* label (>12 words) yet real
+    // aligned figures — "Effect of exchange rate changes …". It must stay a table
+    // row, not be misread as a prose caption and ejected as loose text.
+    let mut ops = Vec::new();
+    // Value columns sit far right (right edges 535 / 600) so even the long-labelled
+    // row keeps a clear gap before its first figure, as on a real wide statement.
+    let label = |ops: &mut Vec<String>, text: &str, y: f32| {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 90 {y} Tm ({text}) Tj ET"));
+    };
+    let figures = |ops: &mut Vec<String>, a: &str, b: &str, y: f32| {
+        for (value, right) in [(a, 535.0_f32), (b, 600.0_f32)] {
+            let x = right - value.chars().count() as f32 * 5.5;
+            ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({value}) Tj ET"));
+        }
+    };
+    let row = |ops: &mut Vec<String>, text: &str, a: &str, b: &str, y: f32| {
+        label(ops, text, y);
+        figures(ops, a, b, y);
+    };
+    label(&mut ops, "CONSOLIDATED STATEMENTS OF CASH FLOWS", 760.0);
+    figures(&mut ops, "2024", "2023", 742.0);
+    label(&mut ops, "Operating activities:", 726.0);
+    row(&mut ops, "Net income", "93,736", "96,995", 710.0);
+    row(&mut ops, "Depreciation and amortization", "11,445", "11,104", 694.0);
+    row(&mut ops, "Deferred income taxes", "4,738", "5,160", 678.0);
+    row(&mut ops, "Stock-based compensation expense", "11,688", "10,833", 662.0);
+    row(&mut ops, "Changes in operating assets", "3,250", "2,500", 646.0);
+    label(&mut ops, "Financing activities:", 630.0);
+    row(&mut ops, "Repurchases of common stock", "94,949", "77,550", 614.0);
+    row(&mut ops, "Dividends and dividend equivalents paid", "15,234", "14,467", 598.0);
+    row(&mut ops, "Proceeds from issuance of term debt", "5,228", "5,465", 582.0);
+    row(&mut ops, "Net cash used in financing activities", "108,488", "110,749", 566.0);
+    // The long-labelled row (13 words) with real two-column figures.
+    row(
+        &mut ops,
+        "Effect of exchange rate changes on cash and cash equivalents and restricted items",
+        "(141)",
+        "(444)",
+        550.0,
+    );
+    row(&mut ops, "Net increase in cash", "1,016", "2,272", 534.0);
+    label(&mut ops, "See accompanying notes.", 510.0);
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn fair_value_subcolumns_pdf() -> Vec<u8> {
+    // A fair-value table: two year groups of (Total | Level 1 | Level 2 | Level 3)
+    // = 8 value columns, but the Level columns are SPARSE — only the first three
+    // rows carry them; the rest are Total-only. The 35% support vote drops the
+    // Level columns, but they repeat periodically across both year groups, so the
+    // rescue pass must recover them. Right edges: y1 Total 230 / L1 280 / L2 330 /
+    // L3 380; y2 Total 430 / L1 480 / L2 530 / L3 580. Every value is 3 digits
+    // (~16.7pt wide at size 9) right-aligned to its column.
+    let mut ops = Vec::new();
+    let push = |ops: &mut Vec<String>, text: &str, right: f32, y: f32| {
+        let x = right - 16.7;
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    };
+    // Three full rows (carry the sparse Level columns).
+    let full = [
+        ("Corporate", [613.0, 581.0, 600.0, 132.0, 816.0, 775.0, 800.0, 141.0]),
+        ("Sovereign", [924.0, 900.0, 911.0, 113.0, 720.0, 700.0, 710.0, 110.0]),
+        ("Municipal", [783.0, 611.0, 622.0, 172.0, 505.0, 344.0, 355.0, 161.0]),
+    ];
+    let edges = [230.0, 280.0, 330.0, 380.0, 430.0, 480.0, 530.0, 580.0];
+    let mut y = 740.0;
+    for (label, values) in full {
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 70 {y} Tm ({label}) Tj ET"));
+        for (value, edge) in values.iter().zip(edges) {
+            push(&mut ops, &format!("{}", *value as i32), edge, y);
+        }
+        y -= 16.0;
+    }
+    // Nine Total-only rows (so the Level columns stay below the 35% vote).
+    for index in 0..9 {
+        ops.push(format!("BT /F1 9 Tf 1 0 0 1 70 {y} Tm (Holding {index}) Tj ET"));
+        push(&mut ops, &format!("{}", 200 + index), 230.0, y);
+        push(&mut ops, &format!("{}", 300 + index), 430.0, y);
+        y -= 16.0;
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn dollar_prefixed_columns_pdf() -> Vec<u8> {
+    // A statement whose total/first rows print each value column as a flush-left
+    // `$` with a right-aligned number, columns packed so the gap from one column's
+    // number to the next column's `$` is small. The `$`-rows must split into one
+    // cell per value (not merge `$7,153 $14,974` into one cell).
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        // Header: right-aligned years over the three columns.
+        ("2025", 312.8, 760.0),
+        ("2024", 365.8, 760.0),
+        ("2023", 417.8, 760.0),
+        // `$`-row (first/total): flush-left `$` + right-aligned number per column.
+        ("Net income", 90.0, 744.0),
+        ("$", 300.0, 744.0),
+        ("7,153", 310.0, 744.0),
+        ("$", 345.0, 744.0),
+        ("14,974", 357.4, 744.0),
+        ("$", 398.0, 744.0),
+        ("12,587", 409.4, 744.0),
+        // plain rows: right-aligned numbers, no `$`.
+        ("Depreciation", 90.0, 728.0),
+        ("1,200", 310.0, 728.0),
+        ("1,300", 363.0, 728.0),
+        ("1,400", 415.0, 728.0),
+        ("Amortization", 90.0, 712.0),
+        ("980", 318.0, 712.0),
+        ("1,010", 363.0, 712.0),
+        ("1,050", 415.0, 712.0),
+        ("Stock-based compensation", 90.0, 696.0),
+        ("2,100", 310.0, 696.0),
+        ("2,050", 363.0, 696.0),
+        ("1,900", 415.0, 696.0),
+        // closing `$`-row (total).
+        ("Net cash from operations", 90.0, 680.0),
+        ("$", 300.0, 680.0),
+        ("11,433", 309.4, 680.0),
+        ("$", 345.0, 680.0),
+        ("19,334", 357.4, 680.0),
+        ("$", 398.0, 680.0),
+        ("16,937", 409.4, 680.0),
+        // negative `$`-row: each value is `(` + `$N)` and must group as `($N)`,
+        // not strand the `(` in the previous cell.
+        // `(` abuts its `$N)` (one cell `($N)`); columns sit a clear gap apart so
+        // a real column boundary separates them (gap-break), as on a real page.
+        ("Net loss", 90.0, 664.0),
+        ("(", 297.7, 664.0),
+        ("$1,829)", 301.0, 664.0),
+        ("(", 355.0, 664.0),
+        ("$2,242)", 358.3, 664.0),
+        ("(", 412.0, 664.0),
+        ("$5,053)", 415.3, 664.0),
+    ] {
+        // Parens are string delimiters in a PDF content stream; escape the lone
+        // `(` and the trailing `)` of the negative figures so the stream is valid.
+        let escaped = text.replace('(', "\\(").replace(')', "\\)");
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn two_stacked_tables_pdf() -> Vec<u8> {
+    // Two separate statements stacked on one page (an "assets" schedule over a
+    // "debt" schedule), divided by a prose sentence. Each must extract as its own
+    // table — the second must not be shredded into loose numeric lines.
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        // Table A: current assets, two right-aligned figure columns.
+        ("2025", 337.8, 760.0),
+        ("2024", 437.8, 760.0),
+        ("Cash and equivalents", 90.0, 744.0),
+        ("12,500", 329.7, 744.0),
+        ("11,200", 429.7, 744.0),
+        ("Accounts receivable", 90.0, 728.0),
+        ("8,300", 334.6, 728.0),
+        ("7,900", 434.6, 728.0),
+        ("Inventories", 90.0, 712.0),
+        ("5,100", 334.6, 712.0),
+        ("4,800", 434.6, 712.0),
+        ("Total current assets", 90.0, 696.0),
+        ("25,900", 329.7, 696.0),
+        ("23,900", 429.7, 696.0),
+        // A prose sentence separates the two schedules.
+        ("The following schedule presents the components of the company's debt obligations.", 90.0, 664.0),
+        // Table B: debt, shifted column positions so it is a distinct structure.
+        ("2025", 317.8, 636.0),
+        ("2024", 417.8, 636.0),
+        ("Short-term borrowings", 90.0, 620.0),
+        ("3,400", 314.6, 620.0),
+        ("3,100", 414.6, 620.0),
+        ("Long-term debt", 90.0, 604.0),
+        ("18,200", 309.7, 604.0),
+        ("17,500", 409.7, 604.0),
+        ("Finance lease obligations", 90.0, 588.0),
+        ("1,900", 314.6, 588.0),
+        ("2,050", 414.6, 588.0),
+        ("Total debt", 90.0, 572.0),
+        ("23,500", 309.7, 572.0),
+        ("22,650", 409.7, 572.0),
     ] {
         ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
     }

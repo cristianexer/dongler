@@ -862,32 +862,83 @@ fn text_run_bbox(state: &GraphicsState, advance: f32, ascent: f32, descent: f32)
 }
 
 fn build_blocks(page_number: usize, lines: &[TextLine], edges: &[GraphicEdge]) -> Vec<Block> {
-    if let Some(detected_table) = detect_table(page_number, lines, edges) {
-        return build_blocks_with_table(page_number, lines, detected_table);
+    let body_size = page_body_size(lines);
+    let tables = detect_page_tables(page_number, lines, edges);
+
+    if tables.is_empty() {
+        let split_lines = split_wide_text_lines(lines);
+        let text_blocks = text_lines_in_reading_order(&split_lines)
+            .into_iter()
+            .filter_map(|line| text_block_from_line(page_number, line, body_size))
+            .collect::<Vec<_>>();
+        return merge_wrapped_text_blocks(text_blocks)
+            .into_iter()
+            .map(Block::Text)
+            .collect();
     }
 
-    let body_size = page_body_size(lines);
-    let split_lines = split_wide_text_lines(lines);
-    let text_blocks = text_lines_in_reading_order(&split_lines)
-        .into_iter()
-        .filter_map(|line| text_block_from_line(page_number, line, body_size))
-        .collect::<Vec<_>>();
-    merge_wrapped_text_blocks(text_blocks)
-        .into_iter()
-        .map(Block::Text)
-        .collect()
+    build_blocks_with_tables(page_number, lines, tables, body_size)
 }
 
-fn build_blocks_with_table(
+/// Detect *every* table on the page, not just the first. A page commonly stacks
+/// two or three statements/schedules; each pass consumes its lines and re-runs
+/// detection on what is left, so a second or third table is recovered instead of
+/// being shredded into loose numeric lines by the prose column reader. Entirely
+/// geometric and document-agnostic — the same detectors, applied repeatedly.
+fn detect_page_tables(
     page_number: usize,
     lines: &[TextLine],
-    detected_table: DetectedTable,
+    edges: &[GraphicEdge],
+) -> Vec<DetectedTable> {
+    let mut tables: Vec<DetectedTable> = Vec::new();
+    let mut consumed = vec![false; lines.len()];
+    // A page has only so many tables; the cap is a guard against a detector that
+    // would otherwise keep re-claiming the same sliver and never make progress.
+    while tables.len() < 8 {
+        let mapping: Vec<usize> = (0..lines.len()).filter(|&index| !consumed[index]).collect();
+        if mapping.len() < 2 {
+            break;
+        }
+        let subset: Vec<TextLine> = mapping.iter().map(|&index| lines[index].clone()).collect();
+        let Some(mut detected) = detect_table(page_number, &subset, edges) else {
+            break;
+        };
+        // `line_indices` index into `subset`; map them back to the page's lines.
+        let original: Vec<usize> = detected
+            .line_indices
+            .iter()
+            .filter_map(|&subset_index| mapping.get(subset_index).copied())
+            .collect();
+        if original.is_empty() {
+            break;
+        }
+        for &index in &original {
+            consumed[index] = true;
+        }
+        detected.line_indices = original;
+        tables.push(detected);
+    }
+    tables
+}
+
+fn build_blocks_with_tables(
+    page_number: usize,
+    lines: &[TextLine],
+    mut tables: Vec<DetectedTable>,
+    body_size: f32,
 ) -> Vec<Block> {
-    let body_size = page_body_size(lines);
+    let mut consumed = vec![false; lines.len()];
+    for table in &tables {
+        for &index in &table.line_indices {
+            if let Some(slot) = consumed.get_mut(index) {
+                *slot = true;
+            }
+        }
+    }
     let remaining_lines = lines
         .iter()
         .enumerate()
-        .filter(|(line_index, _)| !detected_table.line_indices.contains(line_index))
+        .filter(|(line_index, _)| !consumed[*line_index])
         .map(|(_, line)| line.clone())
         .collect::<Vec<_>>();
     let split_lines = split_wide_text_lines(&remaining_lines);
@@ -897,28 +948,35 @@ fn build_blocks_with_table(
             .filter_map(|line| text_block_from_line(page_number, line, body_size))
             .collect(),
     );
-    let table_top = detected_table
-        .table
-        .bbox
-        .map(|bbox| bbox.y + bbox.height)
-        .unwrap_or(f32::NEG_INFINITY);
-    let mut blocks = Vec::new();
-    let mut table_inserted = false;
 
+    // Interleave tables among the text blocks by vertical position: a table is
+    // emitted just before the first text block that sits below its top edge. Text
+    // blocks keep their reading order (which may be column-aware), so this matches
+    // the single-table behaviour exactly when there is only one table.
+    let table_top = |table: &DetectedTable| {
+        table
+            .table
+            .bbox
+            .map(|bbox| bbox.y + bbox.height)
+            .unwrap_or(f32::NEG_INFINITY)
+    };
+    tables.sort_by(|left, right| table_top(right).total_cmp(&table_top(left)));
+
+    let mut blocks = Vec::new();
+    let mut next_table = 0usize;
     for text_block in text_blocks {
         let block_top = text_block
             .bbox
             .map(|bbox| bbox.y + bbox.height)
             .unwrap_or(f32::NEG_INFINITY);
-        if !table_inserted && block_top < table_top {
-            blocks.push(Block::Table(detected_table.table.clone()));
-            table_inserted = true;
+        while next_table < tables.len() && table_top(&tables[next_table]) > block_top {
+            blocks.push(Block::Table(tables[next_table].table.clone()));
+            next_table += 1;
         }
         blocks.push(Block::Text(text_block));
     }
-
-    if !table_inserted {
-        blocks.push(Block::Table(detected_table.table));
+    for table in tables.into_iter().skip(next_table) {
+        blocks.push(Block::Table(table.table));
     }
 
     blocks

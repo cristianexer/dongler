@@ -1199,6 +1199,42 @@ fn load_path_merges_wrapped_row_label_into_one_row() {
 }
 
 #[test]
+fn load_path_detects_multiple_tables_on_one_page() {
+    // A page that stacks two statements must yield two table blocks — detection
+    // runs repeatedly, so the second schedule is recovered instead of being
+    // shredded into loose numeric lines by the prose column reader.
+    let path = write_temp_bytes("two-stacked-tables.pdf", two_stacked_tables_pdf());
+    let document = load_path(&path).unwrap();
+
+    let tables: Vec<&dongler_core::ir::TableBlock> = document.pages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tables.len(), 2, "expected two stacked tables, got {}", tables.len());
+
+    let cells: Vec<&str> = tables
+        .iter()
+        .flat_map(|table| table.rows.iter())
+        .map(|row| row[0].as_str())
+        .collect();
+    assert!(cells.contains(&"Total current assets"), "missing assets table: {cells:?}");
+    assert!(cells.contains(&"Total debt"), "missing debt table: {cells:?}");
+
+    // Both schedules keep their figures aligned to their labels (not detached).
+    let assets = tables
+        .iter()
+        .find(|table| table.rows.iter().any(|row| row[0] == "Total current assets"))
+        .unwrap();
+    let total_assets = assets.rows.iter().find(|row| row[0] == "Total current assets").unwrap();
+    assert_eq!(total_assets[1], "25,900");
+    assert_eq!(total_assets[2], "23,900");
+}
+
+#[test]
 fn load_path_extracts_pdf_table_from_implied_word_alignment() {
     let path = write_temp_bytes("implied-alignment-table.pdf", implied_alignment_table_pdf());
 
@@ -3246,6 +3282,54 @@ fn multi_section_statement_pdf() -> Vec<u8> {
         ("93,736", 329.7, 550.0),
         ("96,995", 429.7, 550.0),
         ("See accompanying notes.", 90.0, 526.0),
+    ] {
+        ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
+    }
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        &ops.join("\n"),
+        "",
+    )
+}
+
+fn two_stacked_tables_pdf() -> Vec<u8> {
+    // Two separate statements stacked on one page (an "assets" schedule over a
+    // "debt" schedule), divided by a prose sentence. Each must extract as its own
+    // table — the second must not be shredded into loose numeric lines.
+    let mut ops = Vec::new();
+    for (text, x, y) in [
+        // Table A: current assets, two right-aligned figure columns.
+        ("2025", 337.8, 760.0),
+        ("2024", 437.8, 760.0),
+        ("Cash and equivalents", 90.0, 744.0),
+        ("12,500", 329.7, 744.0),
+        ("11,200", 429.7, 744.0),
+        ("Accounts receivable", 90.0, 728.0),
+        ("8,300", 334.6, 728.0),
+        ("7,900", 434.6, 728.0),
+        ("Inventories", 90.0, 712.0),
+        ("5,100", 334.6, 712.0),
+        ("4,800", 434.6, 712.0),
+        ("Total current assets", 90.0, 696.0),
+        ("25,900", 329.7, 696.0),
+        ("23,900", 429.7, 696.0),
+        // A prose sentence separates the two schedules.
+        ("The following schedule presents the components of the company's debt obligations.", 90.0, 664.0),
+        // Table B: debt, shifted column positions so it is a distinct structure.
+        ("2025", 317.8, 636.0),
+        ("2024", 417.8, 636.0),
+        ("Short-term borrowings", 90.0, 620.0),
+        ("3,400", 314.6, 620.0),
+        ("3,100", 414.6, 620.0),
+        ("Long-term debt", 90.0, 604.0),
+        ("18,200", 309.7, 604.0),
+        ("17,500", 409.7, 604.0),
+        ("Finance lease obligations", 90.0, 588.0),
+        ("1,900", 314.6, 588.0),
+        ("2,050", 414.6, 588.0),
+        ("Total debt", 90.0, 572.0),
+        ("23,500", 309.7, 572.0),
+        ("22,650", 409.7, 572.0),
     ] {
         ops.push(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET"));
     }

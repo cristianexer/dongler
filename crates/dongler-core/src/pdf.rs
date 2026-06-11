@@ -1072,6 +1072,37 @@ fn split_text_line_at_wide_gap(
     if left_runs.is_empty() || right_runs.is_empty() {
         return None;
     }
+    // A wide gap between a row label and its right-aligned figures is a TABLE ROW,
+    // not a two-column page split: the right side is a cluster of numeric values
+    // that belong with the label (financial statements often set a wide leader gap
+    // between the line item and its columns). Splitting it strands the figures —
+    // the reading-order reader then emits every label, then every value, and the
+    // table is destroyed. Keep such a row whole so the table detectors can pair the
+    // label with its figures. Genuine two-column prose has text (not a value
+    // cluster) on the right, so it still splits.
+    // Strict: *every* non-blank run on the right is a figure, currency symbol, or
+    // bracket — a pure right-aligned value cluster — AND the gap to it is a genuine
+    // wide *leader* gap (financial statements set ~100–360pt between a line item
+    // and its columns; a two-column page's gutter is far narrower, ~30–50pt). A
+    // prose right column (words) or a mere column gutter still splits; only a
+    // financial row's figure block after a leader gap is kept whole.
+    let right_value_cells = right_runs
+        .iter()
+        .filter(|run| is_numeric_value(&run.text))
+        .count();
+    let right_all_figures = right_runs.iter().all(|run| {
+        let text = run.text.trim();
+        text.is_empty()
+            || is_value_cell(text)
+            || matches!(text, "$" | "€" | "£" | "¥" | "(" | ")" | "($")
+    });
+    let leader_gap = right_runs.first().map_or(0.0, |run| run.bbox.x)
+        - left_runs
+            .last()
+            .map_or(0.0, |run| run.bbox.x + run.bbox.width);
+    if right_value_cells >= 3 && right_all_figures && leader_gap >= 100.0 {
+        return None;
+    }
     Some((
         text_line_from_runs(left_runs)?,
         text_line_from_runs(right_runs)?,

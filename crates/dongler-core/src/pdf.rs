@@ -862,32 +862,83 @@ fn text_run_bbox(state: &GraphicsState, advance: f32, ascent: f32, descent: f32)
 }
 
 fn build_blocks(page_number: usize, lines: &[TextLine], edges: &[GraphicEdge]) -> Vec<Block> {
-    if let Some(detected_table) = detect_table(page_number, lines, edges) {
-        return build_blocks_with_table(page_number, lines, detected_table);
+    let body_size = page_body_size(lines);
+    let tables = detect_page_tables(page_number, lines, edges);
+
+    if tables.is_empty() {
+        let split_lines = split_wide_text_lines(lines);
+        let text_blocks = text_lines_in_reading_order(&split_lines)
+            .into_iter()
+            .filter_map(|line| text_block_from_line(page_number, line, body_size))
+            .collect::<Vec<_>>();
+        return merge_wrapped_text_blocks(text_blocks)
+            .into_iter()
+            .map(Block::Text)
+            .collect();
     }
 
-    let body_size = page_body_size(lines);
-    let split_lines = split_wide_text_lines(lines);
-    let text_blocks = text_lines_in_reading_order(&split_lines)
-        .into_iter()
-        .filter_map(|line| text_block_from_line(page_number, line, body_size))
-        .collect::<Vec<_>>();
-    merge_wrapped_text_blocks(text_blocks)
-        .into_iter()
-        .map(Block::Text)
-        .collect()
+    build_blocks_with_tables(page_number, lines, tables, body_size)
 }
 
-fn build_blocks_with_table(
+/// Detect *every* table on the page, not just the first. A page commonly stacks
+/// two or three statements/schedules; each pass consumes its lines and re-runs
+/// detection on what is left, so a second or third table is recovered instead of
+/// being shredded into loose numeric lines by the prose column reader. Entirely
+/// geometric and document-agnostic — the same detectors, applied repeatedly.
+fn detect_page_tables(
     page_number: usize,
     lines: &[TextLine],
-    detected_table: DetectedTable,
+    edges: &[GraphicEdge],
+) -> Vec<DetectedTable> {
+    let mut tables: Vec<DetectedTable> = Vec::new();
+    let mut consumed = vec![false; lines.len()];
+    // A page has only so many tables; the cap is a guard against a detector that
+    // would otherwise keep re-claiming the same sliver and never make progress.
+    while tables.len() < 8 {
+        let mapping: Vec<usize> = (0..lines.len()).filter(|&index| !consumed[index]).collect();
+        if mapping.len() < 2 {
+            break;
+        }
+        let subset: Vec<TextLine> = mapping.iter().map(|&index| lines[index].clone()).collect();
+        let Some(mut detected) = detect_table(page_number, &subset, edges) else {
+            break;
+        };
+        // `line_indices` index into `subset`; map them back to the page's lines.
+        let original: Vec<usize> = detected
+            .line_indices
+            .iter()
+            .filter_map(|&subset_index| mapping.get(subset_index).copied())
+            .collect();
+        if original.is_empty() {
+            break;
+        }
+        for &index in &original {
+            consumed[index] = true;
+        }
+        detected.line_indices = original;
+        tables.push(detected);
+    }
+    tables
+}
+
+fn build_blocks_with_tables(
+    page_number: usize,
+    lines: &[TextLine],
+    mut tables: Vec<DetectedTable>,
+    body_size: f32,
 ) -> Vec<Block> {
-    let body_size = page_body_size(lines);
+    let mut consumed = vec![false; lines.len()];
+    for table in &tables {
+        for &index in &table.line_indices {
+            if let Some(slot) = consumed.get_mut(index) {
+                *slot = true;
+            }
+        }
+    }
     let remaining_lines = lines
         .iter()
         .enumerate()
-        .filter(|(line_index, _)| !detected_table.line_indices.contains(line_index))
+        .filter(|(line_index, _)| !consumed[*line_index])
         .map(|(_, line)| line.clone())
         .collect::<Vec<_>>();
     let split_lines = split_wide_text_lines(&remaining_lines);
@@ -897,28 +948,35 @@ fn build_blocks_with_table(
             .filter_map(|line| text_block_from_line(page_number, line, body_size))
             .collect(),
     );
-    let table_top = detected_table
-        .table
-        .bbox
-        .map(|bbox| bbox.y + bbox.height)
-        .unwrap_or(f32::NEG_INFINITY);
-    let mut blocks = Vec::new();
-    let mut table_inserted = false;
 
+    // Interleave tables among the text blocks by vertical position: a table is
+    // emitted just before the first text block that sits below its top edge. Text
+    // blocks keep their reading order (which may be column-aware), so this matches
+    // the single-table behaviour exactly when there is only one table.
+    let table_top = |table: &DetectedTable| {
+        table
+            .table
+            .bbox
+            .map(|bbox| bbox.y + bbox.height)
+            .unwrap_or(f32::NEG_INFINITY)
+    };
+    tables.sort_by(|left, right| table_top(right).total_cmp(&table_top(left)));
+
+    let mut blocks = Vec::new();
+    let mut next_table = 0usize;
     for text_block in text_blocks {
         let block_top = text_block
             .bbox
             .map(|bbox| bbox.y + bbox.height)
             .unwrap_or(f32::NEG_INFINITY);
-        if !table_inserted && block_top < table_top {
-            blocks.push(Block::Table(detected_table.table.clone()));
-            table_inserted = true;
+        while next_table < tables.len() && table_top(&tables[next_table]) > block_top {
+            blocks.push(Block::Table(tables[next_table].table.clone()));
+            next_table += 1;
         }
         blocks.push(Block::Text(text_block));
     }
-
-    if !table_inserted {
-        blocks.push(Block::Table(detected_table.table));
+    for table in tables.into_iter().skip(next_table) {
+        blocks.push(Block::Table(table.table));
     }
 
     blocks
@@ -1012,6 +1070,37 @@ fn split_text_line_at_wide_gap(
     let left_runs = runs[..split_index].to_vec();
     let right_runs = runs[split_index..].to_vec();
     if left_runs.is_empty() || right_runs.is_empty() {
+        return None;
+    }
+    // A wide gap between a row label and its right-aligned figures is a TABLE ROW,
+    // not a two-column page split: the right side is a cluster of numeric values
+    // that belong with the label (financial statements often set a wide leader gap
+    // between the line item and its columns). Splitting it strands the figures —
+    // the reading-order reader then emits every label, then every value, and the
+    // table is destroyed. Keep such a row whole so the table detectors can pair the
+    // label with its figures. Genuine two-column prose has text (not a value
+    // cluster) on the right, so it still splits.
+    // Strict: *every* non-blank run on the right is a figure, currency symbol, or
+    // bracket — a pure right-aligned value cluster — AND the gap to it is a genuine
+    // wide *leader* gap (financial statements set ~100–360pt between a line item
+    // and its columns; a two-column page's gutter is far narrower, ~30–50pt). A
+    // prose right column (words) or a mere column gutter still splits; only a
+    // financial row's figure block after a leader gap is kept whole.
+    let right_value_cells = right_runs
+        .iter()
+        .filter(|run| is_numeric_value(&run.text))
+        .count();
+    let right_all_figures = right_runs.iter().all(|run| {
+        let text = run.text.trim();
+        text.is_empty()
+            || is_value_cell(text)
+            || matches!(text, "$" | "€" | "£" | "¥" | "(" | ")" | "($")
+    });
+    let leader_gap = right_runs.first().map_or(0.0, |run| run.bbox.x)
+        - left_runs
+            .last()
+            .map_or(0.0, |run| run.bbox.x + run.bbox.width);
+    if right_value_cells >= 3 && right_all_figures && leader_gap >= 100.0 {
         return None;
     }
     Some((
@@ -1312,14 +1401,10 @@ fn is_likely_page_number_line(line: &TextLine) -> bool {
 }
 
 fn text_line_plain_text(line: &TextLine) -> String {
-    line.runs
-        .iter()
-        .map(|run| run.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_owned()
+    // Geometry-aware join so callers (table-label checks, wrapped-label detection,
+    // header assembly) see real words rather than the letter-spaced output the old
+    // `trim().join(" ")` produced on glyph-by-glyph PDFs.
+    join_runs_spaced(&runs_sorted_by_x(line)).trim().to_owned()
 }
 
 fn dedupe_indices(indices: &mut Vec<usize>) {
@@ -1477,7 +1562,13 @@ fn join_runs_spaced(runs: &[TextRun]) -> String {
             // letter-spaced word, so only a clear gap separates them. This is what
             // distinguishes "It occurs" (two words, ~2pt apart) from a fragmented
             // or letter-spaced "U N I T E D" that should read "UNITED".
-            let tokens_separate = prev_multi || multi_char;
+            // A digit-to-digit boundary, though, is a single number split mid-way
+            // ("79,1" + "13" = "79,113"): treat it like a letter-spaced
+            // continuation (the wider threshold) so a number is not torn at an
+            // internal gap, while a real column gap still separates two figures.
+            let numeric_continuation = out.trim_end().ends_with(|c: char| c.is_ascii_digit())
+                && run.text.trim_start().starts_with(|c: char| c.is_ascii_digit());
+            let tokens_separate = (prev_multi || multi_char) && !numeric_continuation;
             let threshold =
                 word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate);
             // A meaningful baseline shift means the adjacent run sits on a
@@ -2310,7 +2401,669 @@ fn detect_table(
 ) -> Option<DetectedTable> {
     detect_ruled_grid_table(page_number, lines, edges)
         .or_else(|| detect_exact_run_table(page_number, lines))
+        .or_else(|| detect_columnar_numeric_table(page_number, lines))
         .or_else(|| detect_implied_alignment_table(page_number, lines))
+}
+
+/// Detect a table by anchoring on the columns themselves rather than on a run of
+/// identically-shaped rows. Numeric cells across the page are clustered by their
+/// right edge into stable columns (numbers are right-aligned), then *every* line
+/// in the table's vertical span is assigned to those columns — so section headers
+/// and subtotals ("Operating activities:", "Cash generated by operating
+/// activities") become full-width label rows instead of breaking the table apart.
+/// This is what lets a whole multi-section financial statement extract as one
+/// table. Entirely geometric and document-agnostic — no financial-specific rules.
+fn detect_columnar_numeric_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
+    let line_cells: Vec<Vec<TextRun>> = lines
+        .iter()
+        .map(|line| coalesce_currency_prefixes(implied_table_cells(line)))
+        .collect();
+
+    // Right edges of value cells (figures *and* dash placeholders), from lines that
+    // already look like data rows (>= 2 value cells), so prose with an incidental
+    // figure does not vote. Counting "—" placeholders lets a sparse column — common
+    // in wide segment/equity tables where most rows are blank — still be detected.
+    let mut right_edges: Vec<f32> = Vec::new();
+    let mut data_rows = 0usize;
+    for cells in &line_cells {
+        // A prose sentence near the table (a caption like "The following table shows
+        // … for 2024, 2023 and 2022 …") carries figures but is not a data row;
+        // letting it vote scatters phantom columns. Skip lines with a many-word cell.
+        if cells_contain_prose(cells) {
+            continue;
+        }
+        let values = cells.iter().filter(|cell| is_value_cell(&cell.text)).count();
+        if values >= 2 {
+            data_rows += 1;
+            for cell in cells.iter().filter(|cell| is_value_cell(&cell.text)) {
+                right_edges.push(cell.bbox.x + cell.bbox.width);
+            }
+        }
+    }
+    if data_rows < 4 {
+        return None;
+    }
+
+    let min_support = ((data_rows as f32) * 0.35).ceil().max(3.0) as usize;
+    let all_clusters = cluster_column_right_edges_with_support(&right_edges, 8.0);
+    let mut columns: Vec<f32> = all_clusters
+        .iter()
+        .filter(|(_, support)| *support >= min_support)
+        .map(|(position, _)| *position)
+        .collect();
+    // Recover sparse-but-periodic sub-columns (paired Shares/Amount, fair-value
+    // Level 1/2/3) that the support vote drops; a no-op for plain N-year tables.
+    columns.extend(rescue_periodic_subcolumns(
+        &all_clusters,
+        &columns,
+        min_support,
+        data_rows,
+    ));
+    columns.sort_by(f32::total_cmp);
+    if columns.len() < 2 {
+        return None;
+    }
+    // Boundary between the label column and the first numeric column. Sit it well
+    // left of the figures (a couple of cell widths, but no further left than half
+    // way to the next column) so a wide right-aligned header date counts as a
+    // column entry while a left-anchored row label does not.
+    let cell_width = column_cell_width(&line_cells, columns[0]);
+    let half_gap = columns
+        .get(1)
+        .map_or(cell_width * 2.5, |next| (next - columns[0]) / 2.0);
+    let first_column_left = columns[0] - (cell_width * 2.5).min(half_gap.max(cell_width * 1.5));
+    let table_right = columns.last().copied().unwrap_or_default();
+
+    // Lines whose cells land on the detected columns are the table's rows.
+    let aligned: Vec<usize> = (0..lines.len())
+        .filter(|&index| {
+            line_cells[index]
+                .iter()
+                .filter(|cell| is_value_cell(&cell.text))
+                .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some())
+        })
+        .collect();
+    let (first, last) = (*aligned.first()?, *aligned.last()?);
+
+    // Walk the span; keep contiguous table rows (data rows + interleaved label-only
+    // rows) and stop at a clear break — a non-aligned numeric line (a different
+    // table) or a large vertical gap.
+    let mut row_indices: Vec<usize> = Vec::new();
+    let mut previous_y: Option<f32> = None;
+    for index in first..=last {
+        let line = &lines[index];
+        let cells = &line_cells[index];
+        let aligned_here = cells
+            .iter()
+                .filter(|cell| is_value_cell(&cell.text))
+                .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some());
+        let numeric_here = cells.iter().any(|cell| is_numeric_value(&cell.text));
+        let label_only = !numeric_here && line.bbox.x <= table_right;
+        if !aligned_here && !label_only {
+            break;
+        }
+        if let Some(prev) = previous_y {
+            if (prev - line.bbox.y).abs() > average_run_size(line).max(line.bbox.height) * 3.5 {
+                break;
+            }
+        }
+        row_indices.push(index);
+        previous_y = Some(line.bbox.y);
+    }
+    let aligned_in_span = row_indices
+        .iter()
+        .filter(|&&index| {
+            line_cells[index]
+                .iter()
+                .filter(|cell| is_value_cell(&cell.text))
+                .any(|cell| nearest_column(cell.bbox.x + cell.bbox.width, &columns).is_some())
+        })
+        .count();
+    if aligned_in_span < 4 {
+        return None;
+    }
+
+    build_columnar_table(page_number, lines, &line_cells, &columns, first_column_left, &row_indices)
+}
+
+/// Merge a lone currency symbol cell into the figure that follows it. Financial
+/// statements left-align the `$` at the column edge and right-align the number, so
+/// the splitter sees two cells ("$", "30,737"); rejoined the `$` belongs to the
+/// number on its right ("$30,737"), not the column on its left.
+fn coalesce_currency_prefixes(cells: Vec<TextRun>) -> Vec<TextRun> {
+    const SYMBOLS: [char; 4] = ['$', '€', '£', '¥'];
+    let mut out: Vec<TextRun> = Vec::with_capacity(cells.len());
+    let mut pending: Option<TextRun> = None;
+    for mut cell in cells {
+        let mut text = cell.text.trim().to_string();
+        if let Some(prefix) = pending.take() {
+            cell.bbox = union_boxes([prefix.bbox, cell.bbox]).unwrap_or(cell.bbox);
+            text = format!("{}{}", prefix.text.trim(), text);
+        }
+        // A lone symbol carries to the next figure (left-aligned column `$`).
+        if text.chars().count() == 1 && text.chars().all(|c| SYMBOLS.contains(&c)) {
+            cell.text = text;
+            pending = Some(cell);
+            continue;
+        }
+        // A trailing symbol belongs to the *next* column's figure: the splitter
+        // groups each column's `$` with the preceding number ("30,737 $").
+        if let Some(last) = text.chars().last() {
+            if SYMBOLS.contains(&last) {
+                let stripped = text[..text.len() - last.len_utf8()].trim_end();
+                if !stripped.is_empty() {
+                    let mut carry = cell.clone();
+                    carry.text = last.to_string();
+                    text = stripped.to_string();
+                    pending = Some(carry);
+                }
+            }
+        }
+        cell.text = text;
+        out.push(cell);
+    }
+    if let Some(prefix) = pending {
+        out.push(prefix);
+    }
+    out
+}
+
+/// Is this cell a numeric value — a figure, possibly wrapped in `$`, parens
+/// (negatives), commas, a percent or a trailing footnote marker? Used to find the
+/// columns to anchor on, so it must accept real table figures and reject prose.
+fn is_numeric_value(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut digits = 0usize;
+    for character in trimmed.chars() {
+        match character {
+            '0'..='9' => digits += 1,
+            '$' | '(' | ')' | ',' | '.' | '%' | '-' | '+' | ' ' | '\u{2014}' | '\u{2013}' => {}
+            _ => return false,
+        }
+    }
+    digits >= 1
+}
+
+/// A cell that occupies a value column — a figure or a dash placeholder ("—",
+/// the financial "zero/none"). Used for column detection so a column that is
+/// mostly blank still registers.
+fn is_value_cell(text: &str) -> bool {
+    is_numeric_value(text) || matches!(text.trim(), "—" | "–")
+}
+
+/// Whether any cell on the line is a prose sentence (a long run of words) rather
+/// than a label or a figure. Table captions and intro sentences sit near tables
+/// and carry years/figures, but must not vote for columns or join the header.
+fn cells_contain_prose(cells: &[TextRun]) -> bool {
+    // A real data row — even one with a long wrapped label ("Effect of exchange
+    // rate changes on cash and cash equivalents and restricted cash") — carries
+    // its figures in two or more *separate* aligned value cells. A prose caption
+    // ("The following table presents … for 2024, 2023 …") keeps its numbers inline
+    // in one many-word cell, so after splitting it has at most one value cell.
+    // Only the latter is prose; never drop a multi-figure data row as a caption.
+    if cells.iter().filter(|cell| is_value_cell(&cell.text)).count() >= 2 {
+        return false;
+    }
+    cells.iter().any(|cell| {
+        cell.text
+            .split_whitespace()
+            .filter(|word| word.chars().any(|c| c.is_alphabetic()))
+            .count()
+            > 12
+    })
+}
+
+/// Every right-edge cluster with its support (the row count behind it), sorted
+/// left→right. Lets a caller keep the well-supported columns *and* selectively
+/// rescue sparse ones, rather than dropping everything below a single threshold.
+fn cluster_column_right_edges_with_support(values: &[f32], tol: f32) -> Vec<(f32, usize)> {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let mut clusters: Vec<(f32, usize)> = Vec::new();
+    let mut start = 0usize;
+    for index in 1..=sorted.len() {
+        let split = index == sorted.len() || sorted[index] - sorted[index - 1] > tol;
+        if split {
+            let cluster = &sorted[start..index];
+            if !cluster.is_empty() {
+                clusters.push((cluster[cluster.len() / 2], cluster.len()));
+            }
+            start = index;
+        }
+    }
+    clusters
+}
+
+/// Revive geometrically-clean but *sparse* sub-columns that the support vote
+/// drops — the paired Shares/Amount of a change-in-equity statement, or the
+/// Level 1/2/3 of a fair-value hierarchy, where most rows carry only the dense
+/// (Amount/Total) column. A dropped cluster is rescued only when it *repeats
+/// periodically* across the column groups: bucket the sparse interior clusters
+/// by their offset within the group pitch and keep an offset class that recurs
+/// in two or more groups. That is the fingerprint of a real sub-column; row-label
+/// noise is aperiodic and single-hit, so it is never revived. By construction a
+/// plain N-year table (every value column dense) has nothing to rescue — a no-op.
+fn rescue_periodic_subcolumns(
+    all_clusters: &[(f32, usize)],
+    kept: &[f32],
+    min_support: usize,
+    data_rows: usize,
+) -> Vec<f32> {
+    if kept.len() < 2 {
+        return Vec::new();
+    }
+    let floor = ((data_rows as f32) * 0.15).ceil().max(3.0) as usize;
+    if floor >= min_support {
+        return Vec::new();
+    }
+    let mut diffs: Vec<f32> = kept.windows(2).map(|window| window[1] - window[0]).collect();
+    diffs.sort_by(f32::total_cmp);
+    let pitch = diffs[diffs.len() / 2];
+    if pitch <= 0.0 {
+        return Vec::new();
+    }
+    let anchor = kept[0];
+    let (first, last) = (kept[0], kept[kept.len() - 1]);
+
+    // Sparse-but-not-noise clusters sitting inside the numeric grid.
+    let candidates: Vec<f32> = all_clusters
+        .iter()
+        .filter(|(position, support)| {
+            *support >= floor
+                && *support < min_support
+                && *position >= first - pitch
+                && *position <= last + pitch
+        })
+        .map(|(position, _)| *position)
+        .collect();
+
+    let residue = |position: f32| ((position - anchor) % pitch + pitch) % pitch;
+    let group_of = |position: f32| ((position - anchor) / pitch).round() as i32;
+
+    let mut rescued = Vec::new();
+    let mut used = vec![false; candidates.len()];
+    for index in 0..candidates.len() {
+        if used[index] {
+            continue;
+        }
+        let target = residue(candidates[index]);
+        let mut class = vec![index];
+        for other in (index + 1)..candidates.len() {
+            if used[other] {
+                continue;
+            }
+            let delta = (target - residue(candidates[other])).abs();
+            if delta.min(pitch - delta) <= 8.0 {
+                class.push(other);
+            }
+        }
+        let groups: std::collections::HashSet<i32> =
+            class.iter().map(|&member| group_of(candidates[member])).collect();
+        if class.len() >= 2 && groups.len() >= 2 {
+            for &member in &class {
+                used[member] = true;
+                rescued.push(candidates[member]);
+            }
+        }
+    }
+    rescued
+}
+
+/// Index of the column whose right edge is within tolerance of `right_edge`.
+fn nearest_column(right_edge: f32, columns: &[f32]) -> Option<usize> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| (index, (right_edge - edge).abs()))
+        .filter(|(_, distance)| *distance <= 14.0)
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(index, _)| index)
+}
+
+/// Typical width of the cells feeding the first column, used to place the
+/// label/number boundary just left of that column.
+fn column_cell_width(line_cells: &[Vec<TextRun>], first_column: f32) -> f32 {
+    let widths: Vec<f32> = line_cells
+        .iter()
+        .flat_map(|cells| cells.iter())
+        .filter(|cell| is_numeric_value(&cell.text))
+        .filter(|cell| ((cell.bbox.x + cell.bbox.width) - first_column).abs() <= 14.0)
+        .map(|cell| cell.bbox.width)
+        .collect();
+    if widths.is_empty() {
+        return 40.0;
+    }
+    let mut sorted = widths.clone();
+    sorted.sort_by(f32::total_cmp);
+    sorted[sorted.len() / 2].max(20.0)
+}
+
+/// Label-only continuation lines directly above a data row that wrap its label —
+/// a long row label that overflowed onto the previous line(s). A continuation sits
+/// at the same left indent, carries no figures, and does not end in ":" (which
+/// marks a section header, not a wrap). Returned top-to-bottom so the text can
+/// prefix the row's own label.
+fn wrapped_label_above(
+    lines: &[TextLine],
+    line_cells: &[Vec<TextRun>],
+    row_index: usize,
+    first_column_left: f32,
+    used: &[usize],
+) -> Vec<usize> {
+    let label_x = lines[row_index].bbox.x;
+    let line_height = average_run_size(&lines[row_index]).max(lines[row_index].bbox.height);
+    let mut result: Vec<usize> = Vec::new();
+    let mut current_y = lines[row_index].bbox.y;
+    loop {
+        let above = (0..lines.len())
+            .filter(|&index| {
+                index != row_index
+                    && !used.contains(&index)
+                    && !result.contains(&index)
+                    && lines[index].bbox.y > current_y
+            })
+            .min_by(|&left, &right| lines[left].bbox.y.total_cmp(&lines[right].bbox.y));
+        let Some(above) = above else { break };
+        let line = &lines[above];
+        let text = text_line_plain_text(line);
+        // A wrapped label line: vertically adjacent, roughly the same indent
+        // (continuations are often hanging-indented), no figures, no trailing ":",
+        // and — crucially — long. A label wraps because it ran the width of the
+        // label column, which distinguishes it from a short section header like
+        // "Assets" or a one-word heading.
+        let long_enough = text.chars().count() >= 28
+            || line.bbox.x + line.bbox.width >= first_column_left - 12.0;
+        // An all-caps line is a section heading ("CASH FLOWS FROM FINANCING
+        // ACTIVITIES"), not a wrapped sentence fragment, even when it is long.
+        let all_caps_heading = text.chars().any(char::is_alphabetic)
+            && text.chars().filter(|c| c.is_alphabetic()).all(char::is_uppercase);
+        if line.bbox.y - current_y > line_height * 1.8
+            || (line.bbox.x - label_x).abs() > 16.0
+            || !long_enough
+            || all_caps_heading
+            || text.trim().is_empty()
+            || text.trim_end().ends_with(':')
+            || line_cells[above].iter().any(|cell| is_numeric_value(&cell.text))
+        {
+            break;
+        }
+        result.push(above);
+        current_y = line.bbox.y;
+    }
+    result.reverse();
+    result
+}
+
+/// A row whose figure columns are all four-digit years (e.g. "2025 2024 2023").
+/// Such a row is a period header, not data — column titles, not values — so it
+/// belongs in the header even when it also carries a label like "Year Ended …".
+fn is_period_header_row(row: &[String]) -> bool {
+    let values: Vec<&str> = row[1..]
+        .iter()
+        .map(|cell| cell.trim())
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    !values.is_empty()
+        && values.iter().all(|cell| {
+            cell.len() == 4
+                && cell.chars().all(|c| c.is_ascii_digit())
+                && cell.parse::<i32>().is_ok_and(|year| (1900..=2100).contains(&year))
+        })
+}
+
+fn build_columnar_table(
+    page_number: usize,
+    lines: &[TextLine],
+    line_cells: &[Vec<TextRun>],
+    columns: &[f32],
+    first_column_left: f32,
+    row_indices: &[usize],
+) -> Option<DetectedTable> {
+    let column_count = columns.len() + 1; // label column + one per numeric column
+    let assign_row = |index: usize| -> Vec<String> {
+        let mut row = vec![String::new(); column_count];
+        for cell in &line_cells[index] {
+            let column = assign_cell_column(cell, columns, first_column_left);
+            push_table_cell_text(&mut row[column], &cell.text);
+        }
+        row
+    };
+
+    // The header is everything above the first *labelled* row: period/column titles
+    // sitting over the numeric columns (lines above the span) plus any leading rows
+    // whose label column is empty (a bare "2024 2023 2022" year row). The first row
+    // carrying label-column text begins the body.
+    let span_top_y = lines[*row_indices.first()?].bbox.y;
+    let mut header_indices: Vec<usize> = (0..lines.len())
+        .filter(|&index| {
+            let line = &lines[index];
+            !row_indices.contains(&index)
+                && line.bbox.y > span_top_y
+                && line.bbox.y - span_top_y
+                    <= average_run_size(line).max(line.bbox.height) * 5.0
+                && line.bbox.x + line.bbox.width >= first_column_left - 24.0
+                && !text_line_plain_text(line).to_ascii_lowercase().starts_with("table ")
+                && !line_is_data_row(line, column_count)
+                && !cells_contain_prose(&line_cells[index])
+                // A real column header sits *over the numeric columns*; a line whose
+                // content all falls in the label column is a statement title or a
+                // "(in millions)" note centered above the table, not a header.
+                && assign_row(index)[1..].iter().any(|cell| !cell.trim().is_empty())
+        })
+        .collect();
+
+    let mut data_start = 0usize;
+    for (position, &index) in row_indices.iter().enumerate() {
+        let row = assign_row(index);
+        // A leading row is part of the header when its label column is empty (a bare
+        // "2024 2023 2022" line) or its figure cells are all years/periods (a
+        // "Year Ended June 30, | 2025 | 2024 | 2023" line) — the body begins at the
+        // first row carrying real figures.
+        if row[0].trim().is_empty() || is_period_header_row(&row) {
+            header_indices.push(index);
+            data_start = position + 1;
+        } else {
+            data_start = position;
+            break;
+        }
+    }
+    header_indices.sort_by(|left, right| lines[*right].bbox.y.total_cmp(&lines[*left].bbox.y));
+
+    let mut header_cells: Vec<String> = vec![String::new(); column_count];
+    for &index in &header_indices {
+        for (column, text) in assign_row(index).into_iter().enumerate() {
+            push_table_cell_text(&mut header_cells[column], &text);
+        }
+    }
+    let header_has_text = header_cells.iter().any(|cell| !cell.is_empty());
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut cell_records: Vec<TableCell> = Vec::new();
+    if header_has_text {
+        for (column, text) in header_cells.iter().enumerate() {
+            cell_records.push(table_cell(0, column, text.clone(), true));
+        }
+    }
+
+    // Pull a wrapped label up into the data row it belongs to: a long row label
+    // can overflow onto the previous line, leaving the figure row with only the
+    // label's tail ("balances" instead of "Cash …, beginning balances").
+    let mut consumed: Vec<usize> = Vec::new();
+    let mut prefixes: Vec<(usize, String)> = Vec::new();
+    for &index in &row_indices[data_start..] {
+        if !line_cells[index].iter().any(|cell| is_numeric_value(&cell.text)) {
+            continue;
+        }
+        // Only a *short tail* row pulls a wrap up: "balances", "equivalents". A row
+        // that already carries a full label ("Net earnings", "Additions to …") is a
+        // section's own item, and the long line above it is that section's heading,
+        // not a wrap — merging there would corrupt the table.
+        if assign_row(index)[0].trim().chars().count() > 11 {
+            continue;
+        }
+        let mut search_used = header_indices.clone();
+        search_used.extend_from_slice(&consumed);
+        let chain = wrapped_label_above(lines, line_cells, index, first_column_left, &search_used);
+        if !chain.is_empty() {
+            let prefix = chain
+                .iter()
+                .map(|&line| text_line_plain_text(&lines[line]))
+                .collect::<Vec<_>>()
+                .join(" ");
+            prefixes.push((index, prefix));
+            consumed.extend(chain);
+        }
+    }
+
+    let mut prose_skipped: Vec<usize> = Vec::new();
+    for &index in &row_indices[data_start..] {
+        if consumed.contains(&index) {
+            continue;
+        }
+        // A prose caption that landed inside the table span is not a row; drop it
+        // here and let it render as its own paragraph rather than a stray table row.
+        if cells_contain_prose(&line_cells[index]) {
+            prose_skipped.push(index);
+            continue;
+        }
+        let mut row = assign_row(index);
+        if let Some((_, prefix)) = prefixes.iter().find(|(line, _)| *line == index) {
+            row[0] = if row[0].trim().is_empty() {
+                prefix.clone()
+            } else {
+                format!("{prefix} {}", row[0])
+            };
+        }
+        if row.iter().all(|cell| cell.is_empty()) {
+            continue;
+        }
+        let table_row = rows.len() + usize::from(header_has_text);
+        for (column, text) in row.iter().enumerate() {
+            cell_records.push(table_cell(table_row, column, text.clone(), false));
+        }
+        rows.push(row);
+    }
+    if rows.is_empty() {
+        return None;
+    }
+
+    // Only take over from the simpler detectors when this method earns its keep:
+    // a large statement whose rows are *not* uniform — section headers / subtotals
+    // (a label with no figures) interleaved with data rows. A small uniform grid is
+    // handled just as well by exact/implied alignment, so defer to those there and
+    // avoid disturbing tables this geometry would only re-shape, not improve.
+    let value_rows = rows.iter().filter(|row| !row[0].trim().is_empty()).count();
+    let label_only_rows = rows
+        .iter()
+        .filter(|row| !row[0].trim().is_empty() && row[1..].iter().all(|cell| cell.trim().is_empty()))
+        .count();
+    let data_with_figures = rows
+        .iter()
+        .filter(|row| row[1..].iter().any(|cell| !cell.trim().is_empty()))
+        .count();
+    // Take over from the simpler detectors only where this method earns its keep.
+    // Two cases qualify: a multi-section statement (section-header rows interleaved
+    // with data, which fragments the other detectors), or a genuinely wide table
+    // (>= 5 numeric columns — segment, equity, geography breakdowns) that the
+    // exact/implied detectors cannot assemble at all. A small uniform grid is left
+    // to those detectors so we do not merely re-shape what they already get right.
+    let multi_section = label_only_rows >= 2 && value_rows >= 8;
+    let wide_table = columns.len() >= 5 && value_rows >= 6;
+    if data_with_figures < 6 || !(multi_section || wide_table) {
+        return None;
+    }
+
+    let mut line_index_set: Vec<usize> = row_indices.to_vec();
+    line_index_set.extend(header_indices.iter().copied());
+    line_index_set.extend(consumed.iter().copied());
+    // Prose captions dropped from the body stay out of the table's claimed lines so
+    // they are emitted as their own text blocks.
+    line_index_set.retain(|index| !prose_skipped.contains(index));
+    line_index_set.sort_unstable();
+    line_index_set.dedup();
+    let bbox = union_boxes(line_index_set.iter().map(|&index| lines[index].bbox))?;
+
+    Some(DetectedTable {
+        table: TableBlock {
+            headers: if header_has_text {
+                header_cells
+            } else {
+                Vec::new()
+            },
+            rows,
+            caption: None,
+            bbox: Some(bbox),
+            cells: cell_records,
+            source_anchors: vec![anchor(page_number, Some(bbox), Vec::new())],
+            confidence: Some(Confidence {
+                score: 0.7,
+                calibrated: false,
+            }),
+        },
+        line_indices: line_index_set,
+    })
+}
+
+/// Column a cell belongs to (0 = label, 1..=N = numeric columns). Right-aligned
+/// figures match a column by their right edge; a header title or a centered/narrow
+/// year that no right edge matches falls to the column band its center sits in;
+/// a non-numeric cell that *starts* in the label region (a row label, however long)
+/// stays in column 0.
+fn assign_cell_column(cell: &TextRun, columns: &[f32], first_column_left: f32) -> usize {
+    if is_numeric_value(&cell.text) {
+        if let Some(column) = nearest_column(cell.bbox.x + cell.bbox.width, columns) {
+            return column + 1;
+        }
+    }
+    // A left-anchored row label, however long, keeps its center well left of the
+    // columns, so the band naturally returns 0 for it; a header title or year
+    // centered over a column lands on that column.
+    column_band(cell, columns, first_column_left)
+}
+
+/// Numeric column (1..=N) whose horizontal band contains the cell's center, or 0
+/// when the center is left of the first column. Band boundaries are the midpoints
+/// between adjacent column right edges.
+fn column_band(cell: &TextRun, columns: &[f32], first_column_left: f32) -> usize {
+    let center = cell.bbox.x + cell.bbox.width / 2.0;
+    if center < first_column_left {
+        return 0;
+    }
+    for index in 0..columns.len() {
+        let upper = columns
+            .get(index + 1)
+            .map_or(f32::INFINITY, |next| (columns[index] + next) / 2.0);
+        if center <= upper {
+            return index + 1;
+        }
+    }
+    columns.len()
+}
+
+fn push_table_cell_text(target: &mut String, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push(' ');
+    }
+    target.push_str(text);
+}
+
+fn table_cell(row: usize, column: usize, text: String, is_header: bool) -> TableCell {
+    TableCell {
+        row,
+        column,
+        text,
+        bbox: None,
+        is_header,
+        col_span: 1,
+        row_span: 1,
+    }
 }
 
 fn detect_ruled_grid_table(
@@ -2736,7 +3489,19 @@ fn implied_table_cells(line: &TextLine) -> Vec<TextRun> {
     for run in runs {
         if let Some(previous) = current.last() {
             let gap = run.bbox.x - (previous.bbox.x + previous.bbox.width);
-            if gap >= threshold {
+            // A `$` is a column-leading currency marker: a financial statement's
+            // total rows print each value column as a flush-left `$` with a
+            // right-aligned number, so the gap from the previous column's number to
+            // this `$` is small and would otherwise merge two columns into one cell
+            // (`$286,004 $—`) — a row of merged cells then fails to align to the
+            // detected columns and drops out as loose numbers. Force a cell boundary
+            // before any `$`-led run that follows a genuine preceding column.
+            let starts_currency = run.text.trim_start().starts_with('$');
+            // …unless the previous run is a lone marker this `$` completes: `$` +
+            // `30,737` is one value, and `(` + `$11,829)` is one negative value
+            // `($11,829)` — don't strand the opening paren in the previous cell.
+            let previous_attaches_currency = matches!(previous.text.trim(), "$" | "(" | "($");
+            if gap >= threshold || (starts_currency && !previous_attaches_currency) {
                 groups.push(std::mem::take(&mut current));
             }
         }

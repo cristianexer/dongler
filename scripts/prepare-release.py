@@ -37,7 +37,7 @@ def set_package_version(path: str, version: str) -> None:
 def set_dongler_core_dependency(path: str, version: str) -> None:
     replace_once(
         path,
-        r'(dongler-core = \{ path = "\.\./dongler-core", version = ")[^"]+(" \})',
+        r'(dongler-core = \{ path = "\.\./dongler-core", version = ")[^"]+(")',
         rf"\g<1>{version}\g<2>",
     )
 
@@ -65,6 +65,7 @@ def update_manifests(version: str) -> None:
         "crates/dongler-cli/Cargo.toml",
         "crates/dongler-python/Cargo.toml",
         "crates/dongler-node/Cargo.toml",
+        "crates/dongler-wasm/Cargo.toml",
     ]
     for manifest in cargo_manifests:
         set_package_version(manifest, version)
@@ -73,6 +74,7 @@ def update_manifests(version: str) -> None:
         "crates/dongler-cli/Cargo.toml",
         "crates/dongler-python/Cargo.toml",
         "crates/dongler-node/Cargo.toml",
+        "crates/dongler-wasm/Cargo.toml",
     ]:
         set_dongler_core_dependency(manifest, version)
 

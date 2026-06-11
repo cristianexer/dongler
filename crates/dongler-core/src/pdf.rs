@@ -1531,7 +1531,13 @@ fn join_runs_spaced(runs: &[TextRun]) -> String {
             // letter-spaced word, so only a clear gap separates them. This is what
             // distinguishes "It occurs" (two words, ~2pt apart) from a fragmented
             // or letter-spaced "U N I T E D" that should read "UNITED".
-            let tokens_separate = prev_multi || multi_char;
+            // A digit-to-digit boundary, though, is a single number split mid-way
+            // ("79,1" + "13" = "79,113"): treat it like a letter-spaced
+            // continuation (the wider threshold) so a number is not torn at an
+            // internal gap, while a real column gap still separates two figures.
+            let numeric_continuation = out.trim_end().ends_with(|c: char| c.is_ascii_digit())
+                && run.text.trim_start().starts_with(|c: char| c.is_ascii_digit());
+            let tokens_separate = (prev_multi || multi_char) && !numeric_continuation;
             let threshold =
                 word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate);
             // A meaningful baseline shift means the adjacent run sits on a

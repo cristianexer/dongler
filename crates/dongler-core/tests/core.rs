@@ -769,6 +769,17 @@ fn load_path_reads_cidfont_w_widths_for_word_spacing() {
 }
 
 #[test]
+fn load_path_keeps_grouped_number_whole() {
+    let path = write_temp_bytes("split-number.pdf", split_grouped_number_pdf());
+
+    let document = load_path(&path).unwrap();
+
+    // The number's two digit runs abut at a sub-word gap; a digit-to-digit
+    // boundary is a numeric continuation, so it must not be torn into "79,1 13".
+    assert_eq!(document.to_markdown().unwrap(), "79,113");
+}
+
+#[test]
 fn load_path_repairs_pdf_word_piece_spacing_and_punctuation() {
     let path = write_temp_bytes("word-piece-spacing.pdf", word_piece_spacing_pdf());
 
@@ -3032,6 +3043,16 @@ fn script_geometry_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         "BT /F1 12 Tf 72 720 Td (x) Tj 3 Ts /F1 8 Tf (2) Tj 0 Ts /F1 12 Tf ( + y) Tj -3 Ts /F1 8 Tf (i) Tj 0 Ts /F1 12 Tf ( = z) Tj ET",
+        "",
+    )
+}
+
+fn split_grouped_number_pdf() -> Vec<u8> {
+    // A single grouped number rendered as two abutting digit runs ("79,1" then
+    // "13" a hair's gap apart) — must read back as "79,113", not "79,1 13".
+    pdf_fixture(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "BT /F1 10 Tf 1 0 0 1 200 720 Tm (79,1) Tj 1 0 0 1 218.6 720 Tm (13) Tj ET",
         "",
     )
 }

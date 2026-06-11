@@ -1,0 +1,28 @@
+[package]
+name = "dongler-wasm"
+version = "0.3.10"
+edition = "2021"
+license = "MIT"
+authors = ["Daniel Fat"]
+description = "WebAssembly bindings for fast Rust-native PDF and document extraction."
+repository = "https://github.com/cristianexer/dongler"
+readme = "README.md"
+publish = false
+
+[lib]
+name = "dongler_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Disable the core's default `parallel` feature: wasm32-unknown-unknown has no
+# threads, so extraction runs sequentially.
+dongler-core = { path = "../dongler-core", version = "0.3.10", default-features = false }
+wasm-bindgen = "0.2"
+serde_json = "1.0"
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]

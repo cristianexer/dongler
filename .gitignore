@@ -43,6 +43,9 @@ node/NOTICE
 node/src/native.d.ts
 node/vendor/
 
+# WebAssembly
+crates/dongler-wasm/pkg/
+
 # Documentation site
 website/node_modules/
 website/build/

@@ -10,9 +10,15 @@ repository = "https://github.com/cristianexer/dongler"
 keywords = ["pdf", "markdown", "latex", "document", "extraction"]
 categories = ["text-processing", "parser-implementations"]
 
+[features]
+default = ["parallel"]
+# Parallel page/font decoding via rayon. Disable (e.g. for wasm32 targets that
+# lack threads) to fall back to sequential extraction.
+parallel = ["dep:rayon"]
+
 [dependencies]
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

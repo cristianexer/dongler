@@ -4,6 +4,7 @@ members = [
     "crates/dongler-cli",
     "crates/dongler-python",
     "crates/dongler-node",
+    "crates/dongler-wasm",
 ]
 resolver = "2"
 

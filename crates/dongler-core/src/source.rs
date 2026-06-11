@@ -25,6 +25,59 @@ impl Source {
         }
     }
 
+    /// Build a source from in-memory bytes without touching the filesystem.
+    ///
+    /// Binary formats keep their raw bytes and expose a lossy UTF-8 view as
+    /// `content`; this is the entry point used by the wasm bindings, where no
+    /// path-based loader is available.
+    pub fn from_bytes(bytes: Vec<u8>, format: impl Into<String>) -> Self {
+        Self {
+            content: String::from_utf8_lossy(&bytes).into_owned(),
+            bytes: Some(bytes),
+            format: format.into(),
+            path: None,
+        }
+    }
+
+    /// Build a source from in-memory bytes, mirroring how the path-based
+    /// loaders decode each format. `name` is the original file name (used for
+    /// gzip and markdown/latex detection) but is never read from disk.
+    pub fn from_bytes_for_format(bytes: &[u8], name: &str, format: InputFormat) -> Result<Self> {
+        if is_gzip_path(Path::new(name)) {
+            let mut decoder = GzDecoder::new(bytes);
+            let mut content = String::new();
+            decoder.read_to_string(&mut content)?;
+            return Ok(Self {
+                bytes: Some(bytes.to_vec()),
+                content,
+                format: format.as_str().to_owned(),
+                path: Some(name.to_owned()),
+            });
+        }
+
+        let is_text = matches!(
+            format,
+            InputFormat::Text
+                | InputFormat::Html
+                | InputFormat::Email
+                | InputFormat::Json
+                | InputFormat::Csv
+                | InputFormat::Xml
+        );
+        let content = String::from_utf8_lossy(bytes).into_owned();
+        let stored = if is_text {
+            content.as_bytes().to_vec()
+        } else {
+            bytes.to_vec()
+        };
+        Ok(Self {
+            content,
+            bytes: Some(stored),
+            format: format.as_str().to_owned(),
+            path: Some(name.to_owned()),
+        })
+    }
+
     pub fn from_path(path: impl AsRef<Path>, format: impl Into<String>) -> Result<Self> {
         let path = path.as_ref();
 

@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "dongler"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "clap",
  "dongler-core",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-core"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "flate2",
  "rayon",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-node"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "dongler-core",
  "napi",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-python"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "dongler-core",
  "pyo3",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-wasm"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "console_error_panic_hook",
  "dongler-core",

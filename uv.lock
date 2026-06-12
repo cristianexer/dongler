@@ -361,7 +361,7 @@ wheels = [
 
 [[package]]
 name = "dongler"
-version = "0.3.12"
+version = "0.3.13"
 source = { editable = "." }
 
 [package.dev-dependencies]

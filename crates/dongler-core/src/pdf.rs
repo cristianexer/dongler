@@ -1220,6 +1220,27 @@ fn is_likely_column_split_gap(left: &BBox, right: &BBox, gap: f32, x_jump: f32) 
     x_jump >= 110.0 && left.x < 280.0 && right.x > 280.0
 }
 
+/// Whether a candidate column split has a genuinely clear gutter at `midpoint`.
+/// A real two-column layout never has a line crossing the gutter; a single column
+/// falsely paired (its lines start at the left margin and extend across the page
+/// centre, as happens when a per-glyph PDF splits a line mid-way) has many lines
+/// straddling it. Reject when more than a quarter of the region's lines cross.
+fn column_gutter_is_clear(lines: &[TextLine], midpoint: f32, min_y: f32, max_y: f32) -> bool {
+    let band = 4.0;
+    let mut region = 0usize;
+    let mut crossing = 0usize;
+    for line in lines {
+        if line.bbox.y < min_y - line.bbox.height || line.bbox.y > max_y + line.bbox.height {
+            continue;
+        }
+        region += 1;
+        if line.bbox.x < midpoint - band && line.bbox.x + line.bbox.width > midpoint + band {
+            crossing += 1;
+        }
+    }
+    region == 0 || (crossing as f32) <= (region as f32) * 0.25
+}
+
 fn text_line_from_runs(runs: Vec<TextRun>) -> Option<TextLine> {
     let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
     let baseline_y = runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32;
@@ -1346,6 +1367,12 @@ fn detect_paired_text_columns(lines: &[TextLine]) -> Option<ColumnLayout<'_>> {
         .reduce(f32::max)?;
     let abstract_y = abstract_heading_y(lines);
     let midpoint = (left_x + right_x) / 2.0;
+    // Reject an illusory gutter: single-column prose whose lines start at the left
+    // margin and run across the page centre would otherwise be torn into two
+    // false columns and read left-halves-then-right-halves.
+    if !column_gutter_is_clear(lines, midpoint, column_min_y, column_max_y) {
+        return None;
+    }
     let mut leading = Vec::new();
     let mut trailing = Vec::new();
     let mut left_column = Vec::new();
@@ -1475,6 +1502,19 @@ fn detect_text_columns(lines: &[TextLine]) -> Option<Vec<Vec<&TextLine>>> {
         return None;
     }
 
+    // A large gap between column *centres* is not enough: a single column whose
+    // lines were split mid-way has two centre clusters but the halves abut (the
+    // left half's right edge meets the right half's left edge). Require a genuine
+    // gutter between the columns' edges — contiguous halves are one wrapped line.
+    let left_right_edge = left
+        .iter()
+        .map(|line| line.bbox.x + line.bbox.width)
+        .fold(f32::MIN, f32::max);
+    let right_left_edge = right.iter().map(|line| line.bbox.x).fold(f32::MAX, f32::min);
+    if right_left_edge - left_right_edge < 15.0 {
+        return None;
+    }
+
     Some(vec![left, right])
 }
 
@@ -1553,8 +1593,48 @@ fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> 
 /// inter-run boundary is decided here. This replaces the old `trim().join(" ")`,
 /// which both dropped producer spaces (joining words: "Netincome") and inserted
 /// spurious ones (splitting fragmented words: "Y ear", "2 0 5 4 9").
+/// Per-line space threshold for a run of single glyphs, adapted to the line's own
+/// gap distribution. PDFs that place every glyph individually encode spacing only
+/// in the inter-glyph gaps, and the magnitude differs wildly by context: tight
+/// body text glues words under a fixed threshold, while a letter-spaced ("tracked")
+/// table header splits into "P r o d u c t i v i t y" under the same one. Anchoring
+/// the threshold to the median gap of the line — tight lines get a low bar (word
+/// spaces recovered), tracked lines a capped high bar (letters stay joined) —
+/// handles both. Returns `None` when there are too few gaps to judge.
+fn adaptive_single_glyph_gap(runs: &[TextRun]) -> Option<f32> {
+    let mut gaps: Vec<f32> = Vec::new();
+    let mut space_w = 0.0f32;
+    let mut prev_end: Option<f32> = None;
+    for run in runs {
+        if run.text.is_empty() {
+            continue;
+        }
+        space_w = space_w.max(run.space_width);
+        if let Some(end) = prev_end {
+            let gap = run.bbox.x - end;
+            if gap.is_finite() && gap > 0.0 {
+                gaps.push(gap);
+            }
+        }
+        prev_end = Some(run.bbox.x + run.bbox.width);
+    }
+    if gaps.len() < 3 || space_w <= 0.0 {
+        return None;
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = gaps[gaps.len() / 2];
+    // Sit the bar above the line's typical gap so word spaces (much larger than
+    // the intra-word gap) clear it. The ceiling is the static single-glyph default
+    // (0.4 of a space width): the adaptive bar may only *lower* the threshold to
+    // recover word spaces on tight or letter-spaced lines, never raise it — a
+    // higher bar would glue words on loosely-set text whose median gap is moderate.
+    Some((median * 1.8).clamp(space_w * 0.08, space_w * 0.4))
+}
+
 fn join_runs_spaced(runs: &[TextRun]) -> String {
     let mut out = String::new();
+    // Per-line adaptive bar for single-glyph sequences (see fn docs).
+    let adaptive_glyph_gap = adaptive_single_glyph_gap(runs);
     // (end_x, space_width, baseline_y, multi_char)
     let mut previous: Option<(f32, f32, f32, bool)> = None;
     for run in runs {
@@ -1578,8 +1658,12 @@ fn join_runs_spaced(runs: &[TextRun]) -> String {
             let numeric_continuation = out.trim_end().ends_with(|c: char| c.is_ascii_digit())
                 && run.text.trim_start().starts_with(|c: char| c.is_ascii_digit());
             let tokens_separate = (prev_multi || multi_char) && !numeric_continuation;
-            let threshold =
-                word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate);
+            // Single-glyph boundaries use the per-line adaptive bar when available;
+            // multi-char tokens keep the tight word-break threshold.
+            let threshold = match adaptive_glyph_gap {
+                Some(adaptive) if !tokens_separate => adaptive,
+                _ => word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate),
+            };
             // A meaningful baseline shift means the adjacent run sits on a
             // different line of text (a super/subscript or a stacked cell being
             // flattened); keep those tokens apart even when they abut horizontally.
@@ -3075,6 +3159,33 @@ fn table_cell(row: usize, column: usize, text: String, is_header: bool) -> Table
     }
 }
 
+/// Order a cell's runs top-to-bottom by text line (PDF space is y-up, so the
+/// visually-top line has the larger baseline), then left-to-right — so a cell
+/// holding several wrapped lines reads in order rather than interleaving glyphs.
+fn sort_runs_reading_order(runs: &mut [TextRun]) {
+    runs.sort_by(|a, b| {
+        let line_a = (a.baseline_y / 3.0).round();
+        let line_b = (b.baseline_y / 3.0).round();
+        line_b
+            .total_cmp(&line_a)
+            .then(a.bbox.x.total_cmp(&b.bbox.x))
+    });
+}
+
+/// Whether a grid row is really a prose paragraph (a note between data rows)
+/// rather than a row of discrete cells. Prose leaves one long cell or, when
+/// sliced by the columns, spreads non-numeric text across many of them.
+fn row_is_prose(cells: &[String]) -> bool {
+    let word_counts: Vec<usize> = cells.iter().map(|c| c.split_whitespace().count()).collect();
+    if word_counts.iter().copied().max().unwrap_or(0) >= 12 {
+        return true;
+    }
+    let nonempty = cells.iter().filter(|c| !c.trim().is_empty()).count();
+    let total_words: usize = word_counts.iter().sum();
+    let numeric = cells.iter().filter(|c| is_value_cell(c)).count();
+    nonempty >= 5 && total_words >= 25 && (numeric as f32) < nonempty as f32 * 0.3
+}
+
 fn detect_ruled_grid_table(
     page_number: usize,
     lines: &[TextLine],
@@ -3097,7 +3208,11 @@ fn detect_ruled_grid_table(
         return None;
     }
 
-    let mut grid = vec![vec![String::new(); columns]; rows];
+    // Collect the runs that fall in each grid cell, then assemble the cell text
+    // with the gap-aware joiner. Appending run text glyph-by-glyph (the old path)
+    // inserted a space between every run, which on a per-glyph PDF rendered
+    // "P r o d u c t i v i t y" — the same letter-spacing the prose path avoids.
+    let mut grid_runs: Vec<Vec<Vec<TextRun>>> = vec![vec![Vec::new(); columns]; rows];
     let mut cell_boxes = vec![vec![None; columns]; rows];
     let mut line_indices = Vec::new();
 
@@ -3112,7 +3227,7 @@ fn detect_ruled_grid_table(
             let Some(row) = grid_row_for(center_y, &horizontals) else {
                 continue;
             };
-            append_grid_cell_text(&mut grid[row][column], &run.text);
+            grid_runs[row][column].push(run.clone());
             cell_boxes[row][column] = Some(
                 cell_boxes[row][column]
                     .and_then(|bbox| union_boxes([bbox, run.bbox]))
@@ -3122,6 +3237,32 @@ fn detect_ruled_grid_table(
         }
         if used_line {
             line_indices.push(line_index);
+        }
+    }
+
+    let mut grid = vec![vec![String::new(); columns]; rows];
+    let mut prose_rows = vec![false; rows];
+    for row in 0..rows {
+        let mut cell_texts = vec![String::new(); columns];
+        for column in 0..columns {
+            if grid_runs[row][column].is_empty() {
+                continue;
+            }
+            let mut runs = grid_runs[row][column].clone();
+            sort_runs_reading_order(&mut runs);
+            cell_texts[column] = clean_pdf_line_text(&join_runs_spaced(&runs));
+        }
+        // A row that is really a prose paragraph (a note set between data rows)
+        // gets sliced across the columns into scattered fragments. Detect it and
+        // merge the whole row — re-assembled in reading order — into one
+        // full-width cell instead of shredding the sentence.
+        if row_is_prose(&cell_texts) {
+            prose_rows[row] = true;
+            let mut all: Vec<TextRun> = grid_runs[row].iter().flatten().cloned().collect();
+            sort_runs_reading_order(&mut all);
+            grid[row][0] = clean_pdf_line_text(&join_runs_spaced(&all));
+        } else {
+            grid[row] = cell_texts;
         }
     }
 
@@ -3149,7 +3290,17 @@ fn detect_ruled_grid_table(
     // Merged cells: a cell whose content overruns a ruled column boundary into an
     // empty neighbour band spans it. The grid text stays rectangular so renderers
     // are unchanged; only `cells` carries the span topology.
-    let (col_span, covered) = merged_cell_col_spans(&cell_boxes, &verticals);
+    let (mut col_span, mut covered) = merged_cell_col_spans(&cell_boxes, &verticals);
+    // A merged prose row occupies one full-width spanning cell.
+    for row in 0..rows {
+        if prose_rows[row] {
+            covered[row][0] = false;
+            col_span[row][0] = columns;
+            for column in 1..columns {
+                covered[row][column] = true;
+            }
+        }
+    }
 
     let mut cells = Vec::new();
     for row in 0..rows {
@@ -3330,16 +3481,6 @@ fn grid_row_for(y: f32, horizontals: &[f32]) -> Option<usize> {
     Some(horizontals.len().saturating_sub(2).saturating_sub(band))
 }
 
-fn append_grid_cell_text(target: &mut String, text: &str) {
-    let cleaned = clean_pdf_line_text(text);
-    if cleaned.is_empty() {
-        return;
-    }
-    if !target.is_empty() {
-        target.push(' ');
-    }
-    target.push_str(&cleaned);
-}
 
 fn detect_exact_run_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
     let candidate_lines = lines
@@ -5324,11 +5465,21 @@ fn text_from_array(
     state: &GraphicsState,
     fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> String {
+    // A `TJ` number displaces the next glyphs by `-value/1000 * font_size` (text
+    // space): a *negative* value opens a rightward gap, a *positive* value tightens
+    // (kerning). When the gap is a meaningful fraction of the font's own space
+    // width it is a word space the producer encoded as positioning rather than a
+    // space glyph — the dominant cause of glued words in professionally typeset
+    // PDFs. Scaling to the actual space width (not a fixed 120/1000-em cutoff) and
+    // honoring the sign recovers those spaces without splitting kerned pairs.
+    let space_width = space_advance_width(state, fonts).max(state.font_size * 0.04);
+    let gap_threshold = space_width * SPACE_GAP_FRACTION;
     let mut text = String::new();
     for item in items {
         match item {
-            Operand::Number(value) if value.abs() >= 120.0 => {
-                if !text.ends_with(' ') {
+            Operand::Number(value) => {
+                let gap = -value / 1000.0 * state.font_size * state.horizontal_scaling;
+                if gap >= gap_threshold && !text.ends_with(' ') {
                     text.push(' ');
                 }
             }
@@ -5341,6 +5492,11 @@ fn text_from_array(
     }
     text
 }
+
+/// Fraction of a font's space-glyph advance that a `TJ` rightward gap must reach
+/// to read as a word space. Below this it is intra-word kerning. Tuned to sit
+/// well above typical kerning (~0.05–0.15 em) and below a real inter-word gap.
+const SPACE_GAP_FRACTION: f32 = 0.3;
 
 fn decode_pdf_text(bytes: &[u8], font: Option<&FontDecoder>) -> String {
     if let Some(font) = font {

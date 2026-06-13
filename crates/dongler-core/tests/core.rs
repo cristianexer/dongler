@@ -601,6 +601,40 @@ fn load_path_decodes_ascii85_flate_pdf_streams() {
 }
 
 #[test]
+fn load_path_inserts_word_space_for_small_tj_kerning_gap() {
+    // A producer that sets a word space as a TJ adjustment smaller than the old
+    // fixed 120/1000-em cutoff (here -90) used to glue the words ("ofthese").
+    // The adaptive, sign-aware threshold scales to the font's space width and
+    // recovers the space, while a positive (kerning) adjustment never adds one.
+    let content = "BT /F1 12 Tf 72 720 Td [(of)-90(these)] TJ ET \
+                   BT /F1 12 Tf 72 700 Td [(A)40(V)] TJ ET";
+    let pdf = format!(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\
+         2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\
+         3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n\
+         4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n\
+         5 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n\
+         trailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        content.len(),
+        content
+    )
+    .into_bytes();
+    let path = write_temp_bytes("tj-kerned-space.pdf", pdf);
+
+    let markdown = load_path(&path).unwrap().to_markdown().unwrap();
+
+    assert!(
+        markdown.contains("of these"),
+        "small negative TJ gap should read as a word space, got: {markdown:?}"
+    );
+    assert!(
+        markdown.contains("AV") && !markdown.contains("A V"),
+        "a positive (kerning) TJ adjustment must not add a space, got: {markdown:?}"
+    );
+}
+
+#[test]
 fn load_path_extracts_pdf_with_inherited_page_resources_and_media_box() {
     let path = write_temp_bytes("inherited-page-resources.pdf", inherited_resources_pdf());
 

@@ -54,3 +54,4 @@ website/.docusaurus/
 # Evaluation downloads and generated reports
 eval/data/
 eval/out/
+eval/data/repro/*.pdf

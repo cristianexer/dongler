@@ -336,7 +336,7 @@ fn insert_ocr_text_block(page: &mut Page, text: String) {
             confidence: Some(Confidence {
                 score: 0.55,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         }),
     );
 }

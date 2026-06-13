@@ -492,7 +492,7 @@ fn extract_page(
         blocks,
         images: extraction.images,
         assets: extraction.assets,
-        warnings,
+        warnings, ..Default::default()
     };
 
     PageExtraction { page, text }
@@ -1008,7 +1008,7 @@ fn image_figure_blocks(page_number: usize, images: &[ImageObject]) -> Vec<Block>
                 confidence: Some(Confidence {
                     score: 0.6,
                     calibrated: false,
-                }),
+                }), ..Default::default()
             })
         })
         .collect()
@@ -1542,7 +1542,7 @@ fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> 
         confidence: Some(Confidence {
             score: 0.82,
             calibrated: false,
-        }),
+        }), ..Default::default()
     })
 }
 
@@ -3010,7 +3010,7 @@ fn build_columnar_table(
             confidence: Some(Confidence {
                 score: 0.7,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         },
         line_indices: line_index_set,
     })
@@ -3187,7 +3187,7 @@ fn detect_ruled_grid_table(
             confidence: Some(Confidence {
                 score: 0.7,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         },
         line_indices,
     })
@@ -3405,7 +3405,7 @@ fn detect_exact_run_table(page_number: usize, lines: &[TextLine]) -> Option<Dete
             confidence: Some(Confidence {
                 score: 0.72,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         },
         line_indices: candidate_lines
             .iter()
@@ -3739,7 +3739,7 @@ fn build_implied_alignment_table(
             confidence: Some(Confidence {
                 score: 0.68,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         },
         line_indices,
     })

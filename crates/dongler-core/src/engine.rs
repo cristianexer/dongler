@@ -112,7 +112,7 @@ fn docbank_token_label_document(source: &Source, engine_name: &str) -> Option<Do
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -241,7 +241,7 @@ fn docbank_line_block(line: DocBankLine) -> Option<Block> {
         confidence: Some(Confidence {
             score: 0.9,
             calibrated: false,
-        }),
+        }), ..Default::default()
     }))
 }
 
@@ -328,7 +328,7 @@ fn document_from_blocks(
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -640,7 +640,7 @@ fn latex_table_block(environment: &str) -> Option<Block> {
         bbox: None,
         cells: Vec::new(),
         source_anchors: vec![latex_source_anchor()],
-        confidence: Some(latex_confidence()),
+        confidence: Some(latex_confidence()), ..Default::default()
     }))
 }
 
@@ -966,7 +966,7 @@ fn latex_text_block(text: String, kind: String) -> Block {
         bbox: None,
         lines: Vec::new(),
         source_anchors: vec![latex_source_anchor()],
-        confidence: Some(latex_confidence()),
+        confidence: Some(latex_confidence()), ..Default::default()
     })
 }
 
@@ -1106,7 +1106,7 @@ fn markdown_table_block(lines: &[&str], index: usize) -> (Block, usize) {
             bbox: None,
             cells: Vec::new(),
             source_anchors: vec![markdown_source_anchor()],
-            confidence: Some(markdown_confidence()),
+            confidence: Some(markdown_confidence()), ..Default::default()
         }),
         next_index,
     )
@@ -1184,7 +1184,7 @@ fn markdown_text_block(text: String, kind: String) -> Block {
         bbox: None,
         lines: Vec::new(),
         source_anchors: vec![markdown_source_anchor()],
-        confidence: Some(markdown_confidence()),
+        confidence: Some(markdown_confidence()), ..Default::default()
     })
 }
 
@@ -1276,7 +1276,7 @@ pub(crate) fn text_document_from_paragraphs(
                 confidence: Some(Confidence {
                     score: 0.9,
                     calibrated: false,
-                }),
+                }), ..Default::default()
             })
         })
         .collect::<Vec<_>>();
@@ -1312,7 +1312,7 @@ pub(crate) fn text_document_from_paragraphs(
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),

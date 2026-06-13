@@ -141,6 +141,7 @@ fn grid_cells_page(value: &Value, page_number: usize) -> Option<Page> {
         width: bbox.map(|bbox| bbox.x + bbox.width),
         height: bbox.map(|bbox| bbox.y + bbox.height),
         rotation: None,
+        route: None,
         bbox: bbox.map(|bbox| BBox {
             x: 0.0,
             y: 0.0,
@@ -154,7 +155,7 @@ fn grid_cells_page(value: &Value, page_number: usize) -> Option<Page> {
             bbox,
             cells: table_cells,
             source_anchors: vec![source_anchor(page_number, bbox)],
-            confidence: Some(confidence()),
+            confidence: Some(confidence()), ..Default::default()
         })],
         images: Vec::new(),
         assets: Vec::new(),
@@ -238,6 +239,7 @@ fn pubtabnet_page(value: &Value, page_number: usize) -> Option<Page> {
         width: bbox.map(|bbox| bbox.x + bbox.width),
         height: bbox.map(|bbox| bbox.y + bbox.height),
         rotation: None,
+        route: None,
         bbox: bbox.map(|bbox| BBox {
             x: 0.0,
             y: 0.0,
@@ -251,7 +253,7 @@ fn pubtabnet_page(value: &Value, page_number: usize) -> Option<Page> {
             bbox,
             cells: table_cells,
             source_anchors: vec![source_anchor(page_number, bbox)],
-            confidence: Some(confidence()),
+            confidence: Some(confidence()), ..Default::default()
         })],
         images: Vec::new(),
         assets: Vec::new(),
@@ -387,7 +389,7 @@ fn word_boxes_page(value: &Value, page_number: usize) -> Option<Page> {
         blocks,
         images: Vec::new(),
         assets: Vec::new(),
-        warnings: Vec::new(),
+        warnings: Vec::new(), ..Default::default()
     })
 }
 
@@ -415,7 +417,7 @@ fn word_box_block(word: &Map<String, Value>, page_number: usize) -> Option<Block
         bbox,
         lines: Vec::new(),
         source_anchors: vec![source_anchor(page_number, bbox)],
-        confidence: Some(confidence()),
+        confidence: Some(confidence()), ..Default::default()
     }))
 }
 
@@ -474,7 +476,7 @@ fn coco_pages(value: &Value) -> Option<Vec<Page>> {
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         });
     }
 
@@ -520,7 +522,7 @@ fn coco_block(
         bbox: Some(bbox),
         lines: Vec::new(),
         source_anchors: vec![source_anchor(page_number, Some(bbox))],
-        confidence: Some(confidence()),
+        confidence: Some(confidence()), ..Default::default()
     }))
 }
 
@@ -561,7 +563,7 @@ fn funsd_page(value: &Value) -> Option<Page> {
         blocks,
         images: Vec::new(),
         assets: Vec::new(),
-        warnings: Vec::new(),
+        warnings: Vec::new(), ..Default::default()
     })
 }
 
@@ -583,7 +585,7 @@ fn funsd_block(field: &Map<String, Value>) -> Option<Block> {
         bbox,
         lines: Vec::new(),
         source_anchors: vec![source_anchor(1, bbox)],
-        confidence: Some(confidence()),
+        confidence: Some(confidence()), ..Default::default()
     }))
 }
 
@@ -637,7 +639,7 @@ fn omnidocbench_pages(value: &Value) -> Option<Vec<Page>> {
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         });
     }
 
@@ -666,7 +668,7 @@ fn block_from_layout_detection(
                     bbox,
                     cells: Vec::new(),
                     source_anchors: vec![source_anchor(page_number, bbox)],
-                    confidence: Some(confidence()),
+                    confidence: Some(confidence()), ..Default::default()
                 }));
             }
         }
@@ -679,7 +681,7 @@ fn block_from_layout_detection(
             bbox,
             lines: Vec::new(),
             source_anchors: vec![source_anchor(page_number, bbox)],
-            confidence: Some(confidence()),
+            confidence: Some(confidence()), ..Default::default()
         }));
     }
 
@@ -690,7 +692,7 @@ fn block_from_layout_detection(
             bbox,
             image_ref: None,
             source_anchors: vec![source_anchor(page_number, bbox)],
-            confidence: Some(confidence()),
+            confidence: Some(confidence()), ..Default::default()
         }));
     }
 
@@ -731,7 +733,7 @@ fn generic_page_from_value(value: &Value, page_number: usize) -> Page {
                 bbox: None,
                 lines: Vec::new(),
                 source_anchors: vec![source_anchor(page_number, None)],
-                confidence: Some(confidence()),
+                confidence: Some(confidence()), ..Default::default()
             })
         })
         .collect();
@@ -745,7 +747,7 @@ fn generic_page_from_value(value: &Value, page_number: usize) -> Page {
         blocks,
         images: Vec::new(),
         assets: Vec::new(),
-        warnings: Vec::new(),
+        warnings: Vec::new(), ..Default::default()
     }
 }
 
@@ -836,7 +838,7 @@ fn build_document(source: &Source, engine_name: &str, mut pages: Vec<Page>) -> D
             blocks: Vec::new(),
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         });
     }
 

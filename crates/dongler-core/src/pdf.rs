@@ -1220,6 +1220,27 @@ fn is_likely_column_split_gap(left: &BBox, right: &BBox, gap: f32, x_jump: f32) 
     x_jump >= 110.0 && left.x < 280.0 && right.x > 280.0
 }
 
+/// Whether a candidate column split has a genuinely clear gutter at `midpoint`.
+/// A real two-column layout never has a line crossing the gutter; a single column
+/// falsely paired (its lines start at the left margin and extend across the page
+/// centre, as happens when a per-glyph PDF splits a line mid-way) has many lines
+/// straddling it. Reject when more than a quarter of the region's lines cross.
+fn column_gutter_is_clear(lines: &[TextLine], midpoint: f32, min_y: f32, max_y: f32) -> bool {
+    let band = 4.0;
+    let mut region = 0usize;
+    let mut crossing = 0usize;
+    for line in lines {
+        if line.bbox.y < min_y - line.bbox.height || line.bbox.y > max_y + line.bbox.height {
+            continue;
+        }
+        region += 1;
+        if line.bbox.x < midpoint - band && line.bbox.x + line.bbox.width > midpoint + band {
+            crossing += 1;
+        }
+    }
+    region == 0 || (crossing as f32) <= (region as f32) * 0.25
+}
+
 fn text_line_from_runs(runs: Vec<TextRun>) -> Option<TextLine> {
     let bbox = union_boxes(runs.iter().map(|run| run.bbox))?;
     let baseline_y = runs.iter().map(|run| run.baseline_y).sum::<f32>() / runs.len() as f32;
@@ -1346,6 +1367,12 @@ fn detect_paired_text_columns(lines: &[TextLine]) -> Option<ColumnLayout<'_>> {
         .reduce(f32::max)?;
     let abstract_y = abstract_heading_y(lines);
     let midpoint = (left_x + right_x) / 2.0;
+    // Reject an illusory gutter: single-column prose whose lines start at the left
+    // margin and run across the page centre would otherwise be torn into two
+    // false columns and read left-halves-then-right-halves.
+    if !column_gutter_is_clear(lines, midpoint, column_min_y, column_max_y) {
+        return None;
+    }
     let mut leading = Vec::new();
     let mut trailing = Vec::new();
     let mut left_column = Vec::new();
@@ -1472,6 +1499,19 @@ fn detect_text_columns(lines: &[TextLine]) -> Option<Vec<Vec<&TextLine>>> {
     let overlap = y_overlap(&left, &right)?;
     let average_height = average_line_height(lines);
     if overlap < average_height {
+        return None;
+    }
+
+    // A large gap between column *centres* is not enough: a single column whose
+    // lines were split mid-way has two centre clusters but the halves abut (the
+    // left half's right edge meets the right half's left edge). Require a genuine
+    // gutter between the columns' edges — contiguous halves are one wrapped line.
+    let left_right_edge = left
+        .iter()
+        .map(|line| line.bbox.x + line.bbox.width)
+        .fold(f32::MIN, f32::max);
+    let right_left_edge = right.iter().map(|line| line.bbox.x).fold(f32::MAX, f32::min);
+    if right_left_edge - left_right_edge < 15.0 {
         return None;
     }
 

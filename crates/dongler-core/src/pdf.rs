@@ -1553,8 +1553,48 @@ fn text_block_from_line(page_number: usize, line: &TextLine, body_size: f32) -> 
 /// inter-run boundary is decided here. This replaces the old `trim().join(" ")`,
 /// which both dropped producer spaces (joining words: "Netincome") and inserted
 /// spurious ones (splitting fragmented words: "Y ear", "2 0 5 4 9").
+/// Per-line space threshold for a run of single glyphs, adapted to the line's own
+/// gap distribution. PDFs that place every glyph individually encode spacing only
+/// in the inter-glyph gaps, and the magnitude differs wildly by context: tight
+/// body text glues words under a fixed threshold, while a letter-spaced ("tracked")
+/// table header splits into "P r o d u c t i v i t y" under the same one. Anchoring
+/// the threshold to the median gap of the line — tight lines get a low bar (word
+/// spaces recovered), tracked lines a capped high bar (letters stay joined) —
+/// handles both. Returns `None` when there are too few gaps to judge.
+fn adaptive_single_glyph_gap(runs: &[TextRun]) -> Option<f32> {
+    let mut gaps: Vec<f32> = Vec::new();
+    let mut space_w = 0.0f32;
+    let mut prev_end: Option<f32> = None;
+    for run in runs {
+        if run.text.is_empty() {
+            continue;
+        }
+        space_w = space_w.max(run.space_width);
+        if let Some(end) = prev_end {
+            let gap = run.bbox.x - end;
+            if gap.is_finite() && gap > 0.0 {
+                gaps.push(gap);
+            }
+        }
+        prev_end = Some(run.bbox.x + run.bbox.width);
+    }
+    if gaps.len() < 3 || space_w <= 0.0 {
+        return None;
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = gaps[gaps.len() / 2];
+    // Sit the bar above the line's typical gap so word spaces (much larger than
+    // the intra-word gap) clear it. The ceiling is the static single-glyph default
+    // (0.4 of a space width): the adaptive bar may only *lower* the threshold to
+    // recover word spaces on tight or letter-spaced lines, never raise it — a
+    // higher bar would glue words on loosely-set text whose median gap is moderate.
+    Some((median * 1.8).clamp(space_w * 0.08, space_w * 0.4))
+}
+
 fn join_runs_spaced(runs: &[TextRun]) -> String {
     let mut out = String::new();
+    // Per-line adaptive bar for single-glyph sequences (see fn docs).
+    let adaptive_glyph_gap = adaptive_single_glyph_gap(runs);
     // (end_x, space_width, baseline_y, multi_char)
     let mut previous: Option<(f32, f32, f32, bool)> = None;
     for run in runs {
@@ -1578,8 +1618,12 @@ fn join_runs_spaced(runs: &[TextRun]) -> String {
             let numeric_continuation = out.trim_end().ends_with(|c: char| c.is_ascii_digit())
                 && run.text.trim_start().starts_with(|c: char| c.is_ascii_digit());
             let tokens_separate = (prev_multi || multi_char) && !numeric_continuation;
-            let threshold =
-                word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate);
+            // Single-glyph boundaries use the per-line adaptive bar when available;
+            // multi-char tokens keep the tight word-break threshold.
+            let threshold = match adaptive_glyph_gap {
+                Some(adaptive) if !tokens_separate => adaptive,
+                _ => word_gap_threshold(prev_space_width, run.space_width, run.size, tokens_separate),
+            };
             // A meaningful baseline shift means the adjacent run sits on a
             // different line of text (a super/subscript or a stacked cell being
             // flattened); keep those tokens apart even when they abut horizontally.
@@ -3097,7 +3141,11 @@ fn detect_ruled_grid_table(
         return None;
     }
 
-    let mut grid = vec![vec![String::new(); columns]; rows];
+    // Collect the runs that fall in each grid cell, then assemble the cell text
+    // with the gap-aware joiner. Appending run text glyph-by-glyph (the old path)
+    // inserted a space between every run, which on a per-glyph PDF rendered
+    // "P r o d u c t i v i t y" — the same letter-spacing the prose path avoids.
+    let mut grid_runs: Vec<Vec<Vec<TextRun>>> = vec![vec![Vec::new(); columns]; rows];
     let mut cell_boxes = vec![vec![None; columns]; rows];
     let mut line_indices = Vec::new();
 
@@ -3112,7 +3160,7 @@ fn detect_ruled_grid_table(
             let Some(row) = grid_row_for(center_y, &horizontals) else {
                 continue;
             };
-            append_grid_cell_text(&mut grid[row][column], &run.text);
+            grid_runs[row][column].push(run.clone());
             cell_boxes[row][column] = Some(
                 cell_boxes[row][column]
                     .and_then(|bbox| union_boxes([bbox, run.bbox]))
@@ -3122,6 +3170,17 @@ fn detect_ruled_grid_table(
         }
         if used_line {
             line_indices.push(line_index);
+        }
+    }
+
+    let mut grid = vec![vec![String::new(); columns]; rows];
+    for (row, columns_runs) in grid_runs.into_iter().enumerate() {
+        for (column, mut runs) in columns_runs.into_iter().enumerate() {
+            if runs.is_empty() {
+                continue;
+            }
+            runs.sort_by(|a, b| a.bbox.x.total_cmp(&b.bbox.x));
+            grid[row][column] = clean_pdf_line_text(&join_runs_spaced(&runs));
         }
     }
 
@@ -3330,16 +3389,6 @@ fn grid_row_for(y: f32, horizontals: &[f32]) -> Option<usize> {
     Some(horizontals.len().saturating_sub(2).saturating_sub(band))
 }
 
-fn append_grid_cell_text(target: &mut String, text: &str) {
-    let cleaned = clean_pdf_line_text(text);
-    if cleaned.is_empty() {
-        return;
-    }
-    if !target.is_empty() {
-        target.push(' ');
-    }
-    target.push_str(&cleaned);
-}
 
 fn detect_exact_run_table(page_number: usize, lines: &[TextLine]) -> Option<DetectedTable> {
     let candidate_lines = lines

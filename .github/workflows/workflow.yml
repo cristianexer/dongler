@@ -104,7 +104,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - run: cargo build -p dongler-wasm --target wasm32-unknown-unknown --locked
+      - name: Build wasm (retry transient registry failures)
+        run: |
+          for attempt in 1 2 3; do
+            if cargo build -p dongler-wasm --target wasm32-unknown-unknown --locked; then
+              exit 0
+            fi
+            echo "wasm build failed (attempt $attempt/3); retrying after a registry hiccup"
+            sleep 15
+          done
+          exit 1
 
   test-python:
     name: Test Python
@@ -335,7 +344,14 @@ jobs:
           set -euo pipefail
 
           crate_version() {
-            sed -n 's/^version = "\(.*\)"/\1/p' "$1" | head -n1
+            local v
+            v="$(sed -n 's/^version = "\(.*\)"/\1/p' "$1" | head -n1)"
+            if [ -z "$v" ]; then
+              # Crate inherits the workspace version (version.workspace = true);
+              # read it from the root manifest's [workspace.package].
+              v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+            fi
+            printf '%s' "$v"
           }
 
           publish_crate() {
@@ -371,15 +387,24 @@ jobs:
             return 1
           }
 
+          # Retry to absorb crates.io index-propagation lag: a crate can't be
+          # published until the deps it was just published after are visible.
+          publish_with_retry() {
+            local package="$1" crate="$2" manifest="$3" attempt
+            for attempt in $(seq 1 12); do
+              if publish_crate "$package" "$crate" "$manifest"; then
+                return 0
+              fi
+              echo "$crate's dependencies are not visible in the crates.io index yet; retry $attempt/12"
+              sleep 20
+            done
+            return 1
+          }
+
+          # Publish in dependency order: core <- pipeline <- cli.
           publish_crate dongler-core dongler-core crates/dongler-core/Cargo.toml
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if publish_crate dongler dongler crates/dongler-cli/Cargo.toml; then
-              exit 0
-            fi
-            echo "dongler-core is not visible in the crates.io index yet; retry $attempt/12"
-            sleep 20
-          done
-          publish_crate dongler dongler crates/dongler-cli/Cargo.toml
+          publish_with_retry dongler-pipeline dongler-pipeline crates/dongler-pipeline/Cargo.toml
+          publish_with_retry dongler dongler crates/dongler-cli/Cargo.toml
 
   publish-pypi:
     name: Publish PyPI

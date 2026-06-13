@@ -34,10 +34,14 @@ def set_package_version(path: str, version: str) -> None:
     replace_once(path, r'^version = "[^"]+"', f'version = "{version}"')
 
 
-def set_dongler_core_dependency(path: str, version: str) -> None:
+def set_internal_dependency(path: str, crate: str, version: str) -> None:
+    """Bump the version pin of an internal path dependency, e.g.
+    `dongler-core = { path = "../dongler-core", version = "X" }`. crates.io
+    rejects path deps without a version, so every internal dep must carry one."""
+    crate_re = re.escape(crate)
     replace_once(
         path,
-        r'(dongler-core = \{ path = "\.\./dongler-core", version = ")[^"]+(")',
+        rf'({crate_re} = \{{ path = "\.\./{crate_re}", version = ")[^"]+(")',
         rf"\g<1>{version}\g<2>",
     )
 
@@ -70,13 +74,18 @@ def update_manifests(version: str) -> None:
     for manifest in cargo_manifests:
         set_package_version(manifest, version)
 
+    # `dongler-core` is depended on by the CLI, bindings, and the pipeline crate.
     for manifest in [
         "crates/dongler-cli/Cargo.toml",
         "crates/dongler-python/Cargo.toml",
         "crates/dongler-node/Cargo.toml",
         "crates/dongler-wasm/Cargo.toml",
+        "crates/dongler-pipeline/Cargo.toml",
     ]:
-        set_dongler_core_dependency(manifest, version)
+        set_internal_dependency(manifest, "dongler-core", version)
+
+    # `dongler-pipeline` is depended on by the CLI.
+    set_internal_dependency("crates/dongler-cli/Cargo.toml", "dongler-pipeline", version)
 
     set_project_version("pyproject.toml", version)
     set_json_version("node/package.json", version)

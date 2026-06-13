@@ -52,21 +52,37 @@ def package_versions() -> list[tuple[str, str]]:
 
 
 def cargo_dependency_versions() -> list[tuple[str, str]]:
+    # Every internal path dependency must pin the workspace version — crates.io
+    # rejects path deps without a version, and a stale pin breaks `cargo publish`.
     manifests = [
         "crates/dongler-cli/Cargo.toml",
         "crates/dongler-python/Cargo.toml",
         "crates/dongler-node/Cargo.toml",
+        "crates/dongler-wasm/Cargo.toml",
+        "crates/dongler-pipeline/Cargo.toml",
     ]
     versions = []
     for manifest in manifests:
         dependency = read_toml(manifest)["dependencies"]["dongler-core"]
         versions.append((f"{manifest} dependency dongler-core", dependency["version"]))
+
+    cli_deps = read_toml("crates/dongler-cli/Cargo.toml")["dependencies"]
+    versions.append(
+        ("crates/dongler-cli dependency dongler-pipeline", cli_deps["dongler-pipeline"]["version"])
+    )
     return versions
 
 
 def cargo_lock_versions() -> list[tuple[str, str | None]]:
     lock = read_toml("Cargo.lock")
-    wanted = {"dongler", "dongler-core", "dongler-python", "dongler-node", "dongler-wasm"}
+    wanted = {
+        "dongler",
+        "dongler-core",
+        "dongler-pipeline",
+        "dongler-python",
+        "dongler-node",
+        "dongler-wasm",
+    }
     found = {}
     for package in lock.get("package", []):
         if package.get("name") in wanted:

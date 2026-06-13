@@ -3159,6 +3159,33 @@ fn table_cell(row: usize, column: usize, text: String, is_header: bool) -> Table
     }
 }
 
+/// Order a cell's runs top-to-bottom by text line (PDF space is y-up, so the
+/// visually-top line has the larger baseline), then left-to-right — so a cell
+/// holding several wrapped lines reads in order rather than interleaving glyphs.
+fn sort_runs_reading_order(runs: &mut [TextRun]) {
+    runs.sort_by(|a, b| {
+        let line_a = (a.baseline_y / 3.0).round();
+        let line_b = (b.baseline_y / 3.0).round();
+        line_b
+            .total_cmp(&line_a)
+            .then(a.bbox.x.total_cmp(&b.bbox.x))
+    });
+}
+
+/// Whether a grid row is really a prose paragraph (a note between data rows)
+/// rather than a row of discrete cells. Prose leaves one long cell or, when
+/// sliced by the columns, spreads non-numeric text across many of them.
+fn row_is_prose(cells: &[String]) -> bool {
+    let word_counts: Vec<usize> = cells.iter().map(|c| c.split_whitespace().count()).collect();
+    if word_counts.iter().copied().max().unwrap_or(0) >= 12 {
+        return true;
+    }
+    let nonempty = cells.iter().filter(|c| !c.trim().is_empty()).count();
+    let total_words: usize = word_counts.iter().sum();
+    let numeric = cells.iter().filter(|c| is_value_cell(c)).count();
+    nonempty >= 5 && total_words >= 25 && (numeric as f32) < nonempty as f32 * 0.3
+}
+
 fn detect_ruled_grid_table(
     page_number: usize,
     lines: &[TextLine],
@@ -3214,24 +3241,28 @@ fn detect_ruled_grid_table(
     }
 
     let mut grid = vec![vec![String::new(); columns]; rows];
-    for (row, columns_runs) in grid_runs.into_iter().enumerate() {
-        for (column, mut runs) in columns_runs.into_iter().enumerate() {
-            if runs.is_empty() {
+    let mut prose_rows = vec![false; rows];
+    for row in 0..rows {
+        let mut cell_texts = vec![String::new(); columns];
+        for column in 0..columns {
+            if grid_runs[row][column].is_empty() {
                 continue;
             }
-            // Order by text line first (a tall grid row can hold two stacked
-            // lines), then left-to-right, so multi-line cells read top-to-bottom
-            // instead of interleaving the two lines' glyphs by raw x.
-            runs.sort_by(|a, b| {
-                // PDF space is y-up, so the visually-top line has the larger
-                // baseline; order lines top-to-bottom (descending y), then x.
-                let line_a = (a.baseline_y / 3.0).round();
-                let line_b = (b.baseline_y / 3.0).round();
-                line_b
-                    .total_cmp(&line_a)
-                    .then(a.bbox.x.total_cmp(&b.bbox.x))
-            });
-            grid[row][column] = clean_pdf_line_text(&join_runs_spaced(&runs));
+            let mut runs = grid_runs[row][column].clone();
+            sort_runs_reading_order(&mut runs);
+            cell_texts[column] = clean_pdf_line_text(&join_runs_spaced(&runs));
+        }
+        // A row that is really a prose paragraph (a note set between data rows)
+        // gets sliced across the columns into scattered fragments. Detect it and
+        // merge the whole row — re-assembled in reading order — into one
+        // full-width cell instead of shredding the sentence.
+        if row_is_prose(&cell_texts) {
+            prose_rows[row] = true;
+            let mut all: Vec<TextRun> = grid_runs[row].iter().flatten().cloned().collect();
+            sort_runs_reading_order(&mut all);
+            grid[row][0] = clean_pdf_line_text(&join_runs_spaced(&all));
+        } else {
+            grid[row] = cell_texts;
         }
     }
 
@@ -3259,7 +3290,17 @@ fn detect_ruled_grid_table(
     // Merged cells: a cell whose content overruns a ruled column boundary into an
     // empty neighbour band spans it. The grid text stays rectangular so renderers
     // are unchanged; only `cells` carries the span topology.
-    let (col_span, covered) = merged_cell_col_spans(&cell_boxes, &verticals);
+    let (mut col_span, mut covered) = merged_cell_col_spans(&cell_boxes, &verticals);
+    // A merged prose row occupies one full-width spanning cell.
+    for row in 0..rows {
+        if prose_rows[row] {
+            covered[row][0] = false;
+            col_span[row][0] = columns;
+            for column in 1..columns {
+                covered[row][column] = true;
+            }
+        }
+    }
 
     let mut cells = Vec::new();
     for row in 0..rows {

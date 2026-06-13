@@ -83,12 +83,22 @@ def html_table(tbl: dict, grid: list[list[str]]) -> str:
     return "<table>" + "".join(rows) + "</table>"
 
 
-def score(grid: list[list[str]]) -> dict:
+def score(grid: list[list[str]], tbl: dict) -> dict:
     cells = [c for r in grid for c in r]
     nonempty = [c for c in cells if c.strip()]
     numeric = [c for c in nonempty if is_numeric(c)]
     ls = [c for c in nonempty if letter_spaced(c)]
-    prose = [c for c in nonempty if len(c.split()) > 12]
+    # Prose CONTAMINATION = a sentence *shredded* across columns: a row with two or
+    # more non-numeric multi-word cells. A coherent note/caption in a single cell
+    # (or merged into one full-width spanning cell) is legitimate, not contamination.
+    prose = []
+    for row in grid:
+        multiword = [
+            c for c in row
+            if len(c.split()) >= 4 and not is_numeric(c) and not letter_spaced(c)
+        ]
+        if len(multiword) >= 2:
+            prose.extend(multiword)
     n = len(cells) or 1
     flags = []
     if grid and ls:
@@ -141,7 +151,7 @@ def main() -> None:
                 continue
             tindex += 1
             grid = cell_grid(block)
-            s = score(grid)
+            s = score(grid, block)
             s.update({"page": pnum, "table": tindex})
             s["_md"] = md_table(grid)
             s["_html"] = html_table(block, grid)

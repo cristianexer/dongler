@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Hybrid PDF-to-Markdown extraction pipeline: deterministic text + ML layout/OCR/tables, fused into dongler IR v2."
 
 [dependencies]
-dongler-core = { path = "../dongler-core", version = "0.3.15" }
+dongler-core = { path = "../dongler-core", version = "0.3.16" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

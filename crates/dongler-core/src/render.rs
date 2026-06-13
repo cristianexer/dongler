@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::ir::{Block, Document, FigureBlock, TableBlock, TextBlock};
+use crate::ir::{Block, BlockKind, Document, FigureBlock, TableBlock, TextBlock};
 
 pub trait Renderer {
     fn render(&self, document: &Document) -> Result<String>;
@@ -15,7 +15,14 @@ impl Renderer for MarkdownRenderer {
         for page in &document.pages {
             for block in &page.blocks {
                 match block {
-                    Block::Text(text) => rendered_blocks.push(render_markdown_text(text)),
+                    Block::Text(text) => {
+                        // Page furniture (running headers/footers) is kept in the
+                        // IR but excluded from default Markdown, per PRD §4.G.
+                        if BlockKind::parse(&text.kind).is_page_furniture() {
+                            continue;
+                        }
+                        rendered_blocks.push(render_markdown_text(text));
+                    }
                     Block::Table(table) => rendered_blocks.push(render_markdown_table(table)),
                     Block::Figure(figure) => {
                         rendered_blocks.push(render_markdown_figure(figure));
@@ -136,6 +143,21 @@ fn emphasize_latex(text: &str, bold: bool, italic: bool) -> String {
 }
 
 fn render_markdown_table(table: &TableBlock) -> String {
+    // PRD default: embed HTML tables so row/col spans survive. Prefer a
+    // pre-rendered html string, then synthesize HTML from spanning cells; fall
+    // back to a GFM pipe table for simple (span-free) tables.
+    if let Some(html) = &table.html {
+        let html = html.trim();
+        if !html.is_empty() {
+            return html.to_owned();
+        }
+    }
+    if table.cells.iter().any(|c| c.col_span > 1 || c.row_span > 1) {
+        if let Some(html) = render_html_table_from_cells(table) {
+            return html;
+        }
+    }
+
     let width = table
         .headers
         .len()
@@ -158,6 +180,67 @@ fn render_markdown_table(table: &TableBlock) -> String {
     lines.push(markdown_row(&separators));
     lines.extend(rows.iter().map(|row| markdown_row(row)));
     lines.join("\n")
+}
+
+/// Build an HTML `<table>` from explicit cells, preserving `colspan`/`rowspan`.
+/// Spanned-over grid positions are omitted from `cells`, so each cell is emitted
+/// once with its span attributes. Returns `None` if there are no cells.
+fn render_html_table_from_cells(table: &TableBlock) -> Option<String> {
+    if table.cells.is_empty() {
+        return None;
+    }
+    let max_row = table.cells.iter().map(|c| c.row).max()?;
+    let mut rows: Vec<Vec<&crate::ir::TableCell>> = vec![Vec::new(); max_row + 1];
+    for cell in &table.cells {
+        if cell.row < rows.len() {
+            rows[cell.row].push(cell);
+        }
+    }
+    for row in &mut rows {
+        row.sort_by_key(|c| c.column);
+    }
+
+    let mut html = String::from("<table>\n");
+    if let Some(caption) = &table.caption {
+        let caption = caption.trim();
+        if !caption.is_empty() {
+            html.push_str(&format!("<caption>{}</caption>\n", html_escape(caption)));
+        }
+    }
+    for row in &rows {
+        html.push_str("<tr>");
+        for cell in row {
+            let tag = if cell.is_header { "th" } else { "td" };
+            let mut attrs = String::new();
+            if cell.col_span > 1 {
+                attrs.push_str(&format!(" colspan=\"{}\"", cell.col_span));
+            }
+            if cell.row_span > 1 {
+                attrs.push_str(&format!(" rowspan=\"{}\"", cell.row_span));
+            }
+            html.push_str(&format!(
+                "<{tag}{attrs}>{}</{tag}>",
+                html_escape(cell.text.trim())
+            ));
+        }
+        html.push_str("</tr>\n");
+    }
+    html.push_str("</table>");
+    Some(html)
+}
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn render_markdown_figure(figure: &FigureBlock) -> String {
@@ -388,5 +471,124 @@ fn latex_unicode_ascii_fallback(character: char) -> &'static str {
         '≠' => "!=",
         '±' => "+/-",
         _ => "?",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Metadata, Page, TableCell};
+
+    fn cell(row: usize, column: usize, text: &str, col_span: usize, row_span: usize) -> TableCell {
+        TableCell {
+            row,
+            column,
+            text: text.to_owned(),
+            bbox: None,
+            is_header: row == 0,
+            col_span,
+            row_span,
+        }
+    }
+
+    fn doc_with(blocks: Vec<Block>) -> Document {
+        Document {
+            schema_version: crate::ir::SCHEMA_VERSION.to_owned(),
+            metadata: Metadata {
+                format: "pdf".to_owned(),
+                engine: "test".to_owned(),
+                source: None,
+                title: None,
+                character_count: 0,
+                word_count: 0,
+                block_count: blocks.len(),
+                file_size_bytes: None,
+                pdf_version: None,
+                encrypted: false,
+            },
+            pages: vec![Page {
+                number: 1,
+                blocks,
+                ..Default::default()
+            }],
+            assets: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn prerendered_html_table_is_emitted_verbatim() {
+        let table = TableBlock {
+            html: Some("<table><tr><td>X</td></tr></table>".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            render_markdown_table(&table),
+            "<table><tr><td>X</td></tr></table>"
+        );
+    }
+
+    #[test]
+    fn spanning_cells_render_as_html_with_span_attrs() {
+        let table = TableBlock {
+            cells: vec![
+                cell(0, 0, "Header", 2, 1),
+                cell(1, 0, "a", 1, 1),
+                cell(1, 1, "b", 1, 1),
+            ],
+            ..Default::default()
+        };
+        let out = render_markdown_table(&table);
+        assert!(out.starts_with("<table>"), "got: {out}");
+        assert!(out.contains("colspan=\"2\""), "got: {out}");
+        assert!(out.contains("<th colspan=\"2\">Header</th>"), "got: {out}");
+        assert!(out.contains("<td>a</td>"), "got: {out}");
+    }
+
+    #[test]
+    fn simple_table_without_spans_stays_pipe_markdown() {
+        let table = TableBlock {
+            headers: vec!["a".to_owned(), "b".to_owned()],
+            rows: vec![vec!["1".to_owned(), "2".to_owned()]],
+            ..Default::default()
+        };
+        let out = render_markdown_table(&table);
+        assert!(out.contains("| a | b |"), "got: {out}");
+        assert!(!out.contains("<table>"), "got: {out}");
+    }
+
+    #[test]
+    fn html_escape_escapes_markup() {
+        assert_eq!(html_escape("a < b & \"c\""), "a &lt; b &amp; &quot;c&quot;");
+    }
+
+    #[test]
+    fn page_furniture_excluded_from_markdown() {
+        let blocks = vec![
+            Block::Text(TextBlock {
+                text: "RUNNING HEADER".to_owned(),
+                kind: "page_header".to_owned(),
+                ..Default::default()
+            }),
+            Block::Text(TextBlock {
+                text: "Body paragraph.".to_owned(),
+                kind: "paragraph".to_owned(),
+                ..Default::default()
+            }),
+        ];
+        let md = MarkdownRenderer.render(&doc_with(blocks)).unwrap();
+        assert!(md.contains("Body paragraph."));
+        assert!(!md.contains("RUNNING HEADER"), "furniture leaked: {md}");
+    }
+
+    #[test]
+    fn heading_kind_renders_with_hashes() {
+        let blocks = vec![Block::Text(TextBlock {
+            text: "Title".to_owned(),
+            kind: "heading_2".to_owned(),
+            ..Default::default()
+        })];
+        let md = MarkdownRenderer.render(&doc_with(blocks)).unwrap();
+        assert_eq!(md.trim(), "## Title");
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "dongler-docs",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "private": true,
   "description": "Developer documentation for Dongler, a fast PDF and document extraction package.",
   "scripts": {

@@ -55,14 +55,21 @@ TEXT_METRIC_KEYS = [
 DEFAULT_TIMEOUT_S = 60
 
 
-def extract_markdown(binary: str, pdf_path: str, timeout: float = DEFAULT_TIMEOUT_S) -> str:
-    """Run ``<binary> extract <pdf> --format markdown`` and return stdout.
+def extract_markdown(
+    binary: str,
+    pdf_path: str,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    cmd: str = "extract",
+) -> str:
+    """Run ``<binary> <cmd> <pdf> --format markdown`` and return stdout.
 
-    Raises ``subprocess.CalledProcessError`` on non-zero exit and
-    ``subprocess.TimeoutExpired`` on timeout; callers catch these per-doc.
+    ``cmd`` selects the engine: ``extract`` (legacy fast path) or ``convert``
+    (the hybrid pipeline). Raises ``subprocess.CalledProcessError`` on non-zero
+    exit and ``subprocess.TimeoutExpired`` on timeout; callers catch these
+    per-doc.
     """
     result = subprocess.run(
-        [binary, "extract", pdf_path, "--format", "markdown"],
+        [binary, cmd, pdf_path, "--format", "markdown"],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -129,6 +136,7 @@ def run_suite(
     out_root: Path,
     run_id: str,
     timeout: float = DEFAULT_TIMEOUT_S,
+    cmd: str = "extract",
 ) -> Dict[str, Any]:
     """Run one suite end-to-end and write artifacts. Returns the aggregate dict."""
     suite_dir = _REPO_ROOT / "eval" / suite
@@ -138,7 +146,9 @@ def run_suite(
     for sample in adapter:
         row: Dict[str, Any] = {"id": sample["id"], "error": None}
         try:
-            prediction = extract_markdown(binary, sample["pdf_path"], timeout=timeout)
+            prediction = extract_markdown(
+                binary, sample["pdf_path"], timeout=timeout, cmd=cmd
+            )
             row["scores"] = score_document(sample, prediction)
         except subprocess.TimeoutExpired:
             row["error"] = f"timeout after {timeout}s"
@@ -157,7 +167,7 @@ def run_suite(
     run_dir = out_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    per_doc = {"suite": suite, "run_id": run_id, "binary": binary, "documents": rows}
+    per_doc = {"suite": suite, "run_id": run_id, "binary": binary, "cmd": cmd, "documents": rows}
     (run_dir / "per_doc.json").write_text(json.dumps(per_doc, indent=2), encoding="utf-8")
     (run_dir / "aggregate.json").write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
     (run_dir / "report.md").write_text(render_report(suite, run_id, rows, aggregate), encoding="utf-8")
@@ -244,6 +254,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="per-doc CLI timeout (s)"
     )
+    parser.add_argument(
+        "--cmd",
+        default="extract",
+        choices=["extract", "convert"],
+        help="CLI subcommand: extract (fast path) or convert (hybrid pipeline)",
+    )
     args = parser.parse_args(argv)
 
     run_id = args.run_id or _default_run_id()
@@ -255,6 +271,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         out_root=out_root,
         run_id=run_id,
         timeout=args.timeout,
+        cmd=args.cmd,
     )
 
     run_dir = out_root / "runs" / run_id

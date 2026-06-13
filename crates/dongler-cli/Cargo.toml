@@ -12,4 +12,5 @@ categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 dongler-core = { path = "../dongler-core", version = "0.3.12" }
+dongler-pipeline = { path = "../dongler-pipeline", version = "0.3.12" }
 clap = { version = "4.5", features = ["derive"] }

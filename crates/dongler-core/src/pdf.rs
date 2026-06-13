@@ -3179,7 +3179,18 @@ fn detect_ruled_grid_table(
             if runs.is_empty() {
                 continue;
             }
-            runs.sort_by(|a, b| a.bbox.x.total_cmp(&b.bbox.x));
+            // Order by text line first (a tall grid row can hold two stacked
+            // lines), then left-to-right, so multi-line cells read top-to-bottom
+            // instead of interleaving the two lines' glyphs by raw x.
+            runs.sort_by(|a, b| {
+                // PDF space is y-up, so the visually-top line has the larger
+                // baseline; order lines top-to-bottom (descending y), then x.
+                let line_a = (a.baseline_y / 3.0).round();
+                let line_b = (b.baseline_y / 3.0).round();
+                line_b
+                    .total_cmp(&line_a)
+                    .then(a.bbox.x.total_cmp(&b.bbox.x))
+            });
             grid[row][column] = clean_pdf_line_text(&join_runs_spaced(&runs));
         }
     }

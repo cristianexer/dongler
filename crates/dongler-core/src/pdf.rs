@@ -5324,11 +5324,21 @@ fn text_from_array(
     state: &GraphicsState,
     fonts: &HashMap<String, Arc<FontDecoder>>,
 ) -> String {
+    // A `TJ` number displaces the next glyphs by `-value/1000 * font_size` (text
+    // space): a *negative* value opens a rightward gap, a *positive* value tightens
+    // (kerning). When the gap is a meaningful fraction of the font's own space
+    // width it is a word space the producer encoded as positioning rather than a
+    // space glyph — the dominant cause of glued words in professionally typeset
+    // PDFs. Scaling to the actual space width (not a fixed 120/1000-em cutoff) and
+    // honoring the sign recovers those spaces without splitting kerned pairs.
+    let space_width = space_advance_width(state, fonts).max(state.font_size * 0.04);
+    let gap_threshold = space_width * SPACE_GAP_FRACTION;
     let mut text = String::new();
     for item in items {
         match item {
-            Operand::Number(value) if value.abs() >= 120.0 => {
-                if !text.ends_with(' ') {
+            Operand::Number(value) => {
+                let gap = -value / 1000.0 * state.font_size * state.horizontal_scaling;
+                if gap >= gap_threshold && !text.ends_with(' ') {
                     text.push(' ');
                 }
             }
@@ -5341,6 +5351,11 @@ fn text_from_array(
     }
     text
 }
+
+/// Fraction of a font's space-glyph advance that a `TJ` rightward gap must reach
+/// to read as a word space. Below this it is intra-word kerning. Tuned to sit
+/// well above typical kerning (~0.05–0.15 em) and below a real inter-word gap.
+const SPACE_GAP_FRACTION: f32 = 0.3;
 
 fn decode_pdf_text(bytes: &[u8], font: Option<&FontDecoder>) -> String {
     if let Some(font) = font {

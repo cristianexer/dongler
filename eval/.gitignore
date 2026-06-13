@@ -1,0 +1,4 @@
+# Eval run artifacts are reproducible; never commit them.
+out/
+__pycache__/
+*.pyc

@@ -1,0 +1,68 @@
+{
+  "name": "frozen-suite-v1",
+  "status": "STUB — schema only; TODO populate with real pinned datasets in M0 (E0).",
+  "created_at": "2026-06-13",
+  "metric_library_version": "eval/metrics@TODO-pin-commit-hash",
+  "notes": "Per PRD §3.1: pinned dataset revisions (HF commit hashes), pinned document lists (explicit file IDs, not globs), pinned metric-library version. Any change bumps the version and invalidates cross-version comparisons. Budget: <=3 frozen-suite runs per milestone. license_class gating carries over from document-benchmarks-v2.json. NO datasets downloaded yet — entries below are placeholders enumerating the intended frozen suite.",
+  "license_classes": {
+    "permissive": "Open license, commercial OK (MIT, Apache-2.0, CDLA-Permissive, CC-BY, ODC-BY).",
+    "eval_only": "Research/evaluation use only; never ships in the repo or product.",
+    "unverified": "License not yet confirmed; review before download."
+  },
+  "datasets": [
+    {
+      "name": "OmniDocBench",
+      "license_class": "eval_only",
+      "revision": "TODO-pin-hf-commit-hash",
+      "role": "headline-end-to-end",
+      "document_ids": [],
+      "metrics": ["edit_similarity", "char_error_rate", "teds", "reading_order_ard", "normalized_kendall_tau", "mean_average_precision"],
+      "todo": true
+    },
+    {
+      "name": "olmOCR-Bench",
+      "license_class": "permissive",
+      "revision": "TODO-pin-hf-commit-hash",
+      "role": "headline-unit-checks",
+      "document_ids": [],
+      "metrics": ["unit_pass_rate"],
+      "todo": true
+    },
+    {
+      "name": "READoc",
+      "license_class": "permissive",
+      "revision": "TODO-pin-hf-commit-hash",
+      "role": "markdown-structure-dev",
+      "document_ids": [],
+      "metrics": ["edit_similarity", "bleu"],
+      "todo": true
+    },
+    {
+      "name": "FinTabNet.c",
+      "license_class": "permissive",
+      "revision": "TODO-pin-hf-commit-hash",
+      "role": "table-frozen-test",
+      "document_ids": [],
+      "metrics": ["teds", "teds_struct", "grits_top", "grits_con", "grits_loc"],
+      "todo": true
+    },
+    {
+      "name": "DocLayNet",
+      "license_class": "permissive",
+      "revision": "TODO-pin-hf-commit-hash",
+      "role": "layout-frozen-test",
+      "document_ids": [],
+      "metrics": ["mean_average_precision", "mean_best_iou"],
+      "todo": true
+    },
+    {
+      "name": "Internal-50",
+      "license_class": "owned",
+      "revision": "TODO-pin-internal-corpus-revision",
+      "role": "reality-check-held-out",
+      "document_ids": [],
+      "metrics": ["edit_similarity", "token_coverage", "spurious_token_rate"],
+      "todo": true
+    }
+  ]
+}

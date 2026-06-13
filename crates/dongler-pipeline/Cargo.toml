@@ -1,0 +1,30 @@
+[package]
+name = "dongler-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Hybrid PDF-to-Markdown extraction pipeline: deterministic text + ML layout/OCR/tables, fused into dongler IR v2."
+
+[dependencies]
+dongler-core = { path = "../dongler-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rstar = "0.13"
+
+# ML stack — only compiled with the `ml` feature so the default build (and the
+# WASM/fast path) pull in no native ONNX Runtime or pdfium dependency.
+ort = { version = "=2.0.0-rc.12", optional = true }
+ndarray = { version = "0.17", optional = true }
+image = { version = "0.25", optional = true }
+fast_image_resize = { version = "6", optional = true }
+pdfium-render = { version = "0.9", optional = true }
+hf-hub = { version = "0.5", optional = true, default-features = false, features = ["ureq", "rustls-tls"] }
+
+[features]
+default = []
+# Enables the ML stages (layout/OCR/table inference) and PDF rasterization.
+# Requires ONNX Runtime + a pdfium binary at runtime.
+ml = ["dep:ort", "dep:ndarray", "dep:image", "dep:fast_image_resize", "dep:pdfium-render", "dep:hf-hub"]

@@ -27,6 +27,13 @@ enum Commands {
         #[arg(long)]
         pages: Option<String>,
     },
+    /// Run the hybrid pipeline (triage + reading order + IR v2). The
+    /// deterministic, model-free path; ML stages are a future opt-in.
+    Convert {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -53,7 +60,29 @@ fn run() -> Result<()> {
             format,
             pages,
         } => extract(&path, format, pages.as_deref()),
+        Commands::Convert { path, format } => convert(&path, format),
     }
+}
+
+fn convert(path: &Path, output_format: OutputFormat) -> Result<()> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| dongler_core::DonglerError::invalid_input(format!("cannot read file: {e}")))?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("input");
+    let pipeline = dongler_pipeline::Pipeline::new();
+    let output = match output_format {
+        OutputFormat::Markdown => pipeline.convert_to_markdown(&bytes, filename)?,
+        OutputFormat::Json => pipeline.convert_to_json(&bytes, filename)?,
+        OutputFormat::Latex => {
+            // LaTeX still routes through the core renderer over the IR v2 doc.
+            let document = pipeline.convert_bytes(&bytes, filename)?;
+            document.to_latex()?
+        }
+    };
+    println!("{output}");
+    Ok(())
 }
 
 /// Parse a 1-based page spec like "45", "43-45", "1,5,9" into a membership test.

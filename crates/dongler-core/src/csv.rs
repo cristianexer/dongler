@@ -83,7 +83,7 @@ fn block_from_line(line: &str, delimiter: char) -> Option<Block> {
         confidence: Some(Confidence {
             score: 0.9,
             calibrated: false,
-        }),
+        }), ..Default::default()
     }))
 }
 
@@ -150,7 +150,7 @@ fn ckorzen_tsv_blocks(source: &Source, delimiter: char) -> Option<Vec<Block>> {
             confidence: Some(Confidence {
                 score: 0.9,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         }));
     }
 
@@ -365,7 +365,7 @@ fn tesseract_line_block(
         confidence: Some(Confidence {
             score: confidence.unwrap_or(0.9),
             calibrated: false,
-        }),
+        }), ..Default::default()
     }))
 }
 
@@ -520,7 +520,7 @@ fn build_document(source: &Source, engine_name: &str, blocks: Vec<Block>) -> Doc
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),

@@ -169,7 +169,7 @@ fn hocr_document(source: &Source, engine_name: &str) -> Option<Document> {
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -196,7 +196,7 @@ fn hocr_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block> {
             confidence: Some(Confidence {
                 score: 0.9,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         }));
     }
 
@@ -228,7 +228,7 @@ fn hocr_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block> {
         confidence: Some(Confidence {
             score: confidence.unwrap_or(0.9),
             calibrated: false,
-        }),
+        }), ..Default::default()
     }))
 }
 
@@ -242,7 +242,7 @@ fn hocr_word_block(word: HocrWord, page_number: usize) -> Block {
         confidence: Some(Confidence {
             score: word.confidence.unwrap_or(0.9),
             calibrated: false,
-        }),
+        }), ..Default::default()
     })
 }
 
@@ -318,7 +318,7 @@ fn page_xml_document(source: &Source, engine_name: &str) -> Option<Document> {
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -347,7 +347,7 @@ fn page_xml_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block
             confidence: Some(Confidence {
                 score: page_xml_confidence_from_content(line.content).unwrap_or(0.9),
                 calibrated: false,
-            }),
+            }), ..Default::default()
         }));
     }
 
@@ -380,7 +380,7 @@ fn page_xml_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block
         confidence: Some(Confidence {
             score: confidence.unwrap_or(0.9),
             calibrated: false,
-        }),
+        }), ..Default::default()
     }))
 }
 
@@ -451,7 +451,7 @@ fn alto_document(source: &Source, engine_name: &str) -> Option<Document> {
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),
@@ -502,7 +502,7 @@ fn alto_line_block(line: XmlElement<'_>, page_number: usize) -> Option<Block> {
         confidence: Some(Confidence {
             score: confidence.unwrap_or(0.9),
             calibrated: false,
-        }),
+        }), ..Default::default()
     }))
 }
 
@@ -516,7 +516,7 @@ fn alto_word_block(word: AltoWord, page_number: usize) -> Block {
         confidence: Some(Confidence {
             score: word.confidence.unwrap_or(0.9),
             calibrated: false,
-        }),
+        }), ..Default::default()
     })
 }
 
@@ -787,7 +787,7 @@ fn pascal_voc_document(source: &Source, engine_name: &str) -> Option<Document> {
                 confidence: Some(Confidence {
                     score: 0.9,
                     calibrated: false,
-                }),
+                }), ..Default::default()
             })
         })
         .collect::<Vec<_>>();
@@ -828,7 +828,7 @@ fn pascal_voc_document(source: &Source, engine_name: &str) -> Option<Document> {
             blocks,
             images: Vec::new(),
             assets: Vec::new(),
-            warnings: Vec::new(),
+            warnings: Vec::new(), ..Default::default()
         }],
         assets: Vec::new(),
         warnings: Vec::new(),

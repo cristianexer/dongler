@@ -448,7 +448,7 @@ fn load_path_extracts_pdf_text_with_page_geometry_and_source_anchors() {
 
     let document = load_path(&path).unwrap();
 
-    assert_eq!(document.schema_version, "dongler.ir.v1");
+    assert_eq!(document.schema_version, "dongler.ir.v2");
     assert_eq!(document.metadata.format, "pdf");
     assert_eq!(document.metadata.engine, "pdf-native");
     assert_eq!(document.pages.len(), 1);

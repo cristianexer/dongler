@@ -25,9 +25,9 @@ pub use error::{DonglerError, Result};
 pub use format::{ExtractionStatus, InputFormat};
 pub use image::ImageEngine;
 pub use ir::{
-    Asset, BBox, BatchResult, Block, Confidence, Document, ExtractOptions, FigureBlock,
-    ImageObject, Line, Metadata, Page, SourceAnchor, Span, TableBlock, TableCell, TextBlock,
-    Warning,
+    Asset, BBox, BatchResult, Block, BlockKind, Confidence, Document, ExtractOptions, FigureBlock,
+    ImageObject, Line, Metadata, Page, Provenance, Route, SourceAnchor, Span, TableBlock, TableCell,
+    TextBlock, TextSource, Warning,
 };
 pub use json::JsonEngine;
 pub use openxml::OpenXmlEngine;
@@ -336,7 +336,7 @@ fn insert_ocr_text_block(page: &mut Page, text: String) {
             confidence: Some(Confidence {
                 score: 0.55,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         }),
     );
 }

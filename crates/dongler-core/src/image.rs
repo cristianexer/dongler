@@ -66,7 +66,7 @@ impl ExtractionEngine for ImageEngine {
             confidence: Some(Confidence {
                 score: 0.9,
                 calibrated: false,
-            }),
+            }), ..Default::default()
         });
 
         Ok(Document {
@@ -92,7 +92,7 @@ impl ExtractionEngine for ImageEngine {
                 blocks: vec![figure],
                 images: vec![image],
                 assets: vec![asset.clone()],
-                warnings: Vec::new(),
+                warnings: Vec::new(), ..Default::default()
             }],
             assets: vec![asset],
             warnings: Vec::<Warning>::new(),

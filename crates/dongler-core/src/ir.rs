@@ -1,6 +1,117 @@
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: &str = "dongler.ir.v1";
+pub const SCHEMA_VERSION: &str = "dongler.ir.v2";
+
+/// How a page was routed by the pipeline triage stage (IR v2). `None` on
+/// documents produced by the legacy fast path, which keeps v1 deserializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    /// Text-layer characters cover the page; no OCR needed.
+    BornDigital,
+    /// No usable text layer; the page is an image and must be OCR'd.
+    Scanned,
+    /// Partial text layer (e.g. scan with embedded OCR); decided per region.
+    Hybrid,
+}
+
+/// Where a block's text came from. Recorded in [`Provenance`] so consumers can
+/// audit (and filter) text by trustworthiness — the deterministic invariant is
+/// that `Vlm` text only appears after passing the escalation validators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSource {
+    /// Pulled verbatim from the PDF text layer (deterministic, cannot hallucinate).
+    TextLayer,
+    /// Produced by an OCR model on a rasterized region.
+    Ocr,
+    /// Produced by a vision-language model (validator-gated).
+    Vlm,
+    /// Derived by a heuristic in the legacy engine (no model).
+    Heuristic,
+}
+
+/// Per-block provenance attached by the pipeline (IR v2). Optional so legacy
+/// documents remain valid.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Provenance {
+    pub text_source: TextSource,
+    /// Model identifier, e.g. `"docling-layout-heron@v2"`. `None` for text-layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+/// The closed vocabulary of text-block kinds (IR v2). This is a *helper* over the
+/// serialized `TextBlock::kind` string rather than a hard field-type change, so
+/// v1 documents — including the ones that emit the buggy `"heading"` kind — still
+/// deserialize. New pipeline code should construct kinds via [`BlockKind::as_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    Heading(u8),
+    Paragraph,
+    ListItem,
+    Code,
+    Formula,
+    Caption,
+    PageHeader,
+    PageFooter,
+    Footnote,
+}
+
+impl BlockKind {
+    /// Canonical serialized form used in `TextBlock::kind`.
+    pub fn as_str(&self) -> String {
+        match self {
+            BlockKind::Heading(level) => format!("heading_{}", (*level).clamp(1, 6)),
+            BlockKind::Paragraph => "paragraph".to_owned(),
+            BlockKind::ListItem => "list_item".to_owned(),
+            BlockKind::Code => "code".to_owned(),
+            BlockKind::Formula => "formula".to_owned(),
+            BlockKind::Caption => "caption".to_owned(),
+            BlockKind::PageHeader => "page_header".to_owned(),
+            BlockKind::PageFooter => "page_footer".to_owned(),
+            BlockKind::Footnote => "footnote".to_owned(),
+        }
+    }
+
+    /// Tolerant parse of a serialized kind string. Unknown or legacy values
+    /// (including v1's bare `"heading"` and `"list"`) map to their closest v2
+    /// equivalent, never failing — this is what keeps v1 deserialization total.
+    pub fn parse(kind: &str) -> BlockKind {
+        if let Some(rest) = kind.strip_prefix("heading_") {
+            if let Ok(level) = rest.parse::<u8>() {
+                return BlockKind::Heading(level.clamp(1, 6));
+            }
+        }
+        match kind {
+            "heading" | "title" => BlockKind::Heading(1),
+            "list" | "list_item" => BlockKind::ListItem,
+            "code" => BlockKind::Code,
+            "formula" | "equation" => BlockKind::Formula,
+            "caption" => BlockKind::Caption,
+            "page_header" | "header" => BlockKind::PageHeader,
+            "page_footer" | "footer" => BlockKind::PageFooter,
+            "footnote" => BlockKind::Footnote,
+            _ => BlockKind::Paragraph,
+        }
+    }
+
+    /// Heading level if this kind is a heading.
+    pub fn heading_level(&self) -> Option<u8> {
+        match self {
+            BlockKind::Heading(level) => Some(*level),
+            _ => None,
+        }
+    }
+
+    /// Whether the renderer should drop this kind from default Markdown output
+    /// (page furniture, per the olmOCR convention the PRD adopts).
+    pub fn is_page_furniture(&self) -> bool {
+        matches!(self, BlockKind::PageHeader | BlockKind::PageFooter)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -14,7 +125,7 @@ pub struct Document {
     pub warnings: Vec<Warning>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Page {
     pub number: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -23,6 +134,9 @@ pub struct Page {
     pub height: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<i32>,
+    /// Pipeline triage classification (IR v2). `None` on legacy fast-path output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<Route>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bbox: Option<BBox>,
     pub blocks: Vec<Block>,
@@ -42,7 +156,7 @@ pub enum Block {
     Figure(FigureBlock),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TextBlock {
     pub text: String,
     pub kind: String,
@@ -54,9 +168,12 @@ pub struct TextBlock {
     pub source_anchors: Vec<SourceAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<Confidence>,
+    /// Pipeline provenance (IR v2). `None` on legacy fast-path output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TableBlock {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -65,13 +182,20 @@ pub struct TableBlock {
     pub bbox: Option<BBox>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<TableCell>,
+    /// Pre-rendered HTML table preserving row/col spans (IR v2). When present the
+    /// Markdown renderer embeds it verbatim (the PRD's default table form).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_anchors: Vec<SourceAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<Confidence>,
+    /// Pipeline provenance (IR v2). `None` on legacy fast-path output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FigureBlock {
     pub alt_text: Option<String>,
     pub caption: Option<String>,
@@ -83,6 +207,9 @@ pub struct FigureBlock {
     pub source_anchors: Vec<SourceAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<Confidence>,
+    /// Pipeline provenance (IR v2). `None` on legacy fast-path output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

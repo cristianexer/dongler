@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/dongler-core",
+    "crates/dongler-pipeline",
     "crates/dongler-cli",
     "crates/dongler-python",
     "crates/dongler-node",

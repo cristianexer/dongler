@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "dongler"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "clap",
  "dongler-core",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-core"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "flate2",
  "rayon",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-node"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "dongler-core",
  "napi",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-pipeline"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "dongler-core",
  "fast_image_resize",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-python"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "dongler-core",
  "pyo3",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "dongler-wasm"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "console_error_panic_hook",
  "dongler-core",

@@ -1,6 +1,6 @@
 [package]
 name = "dongler-wasm"
-version = "0.3.13"
+version = "0.3.14"
 edition = "2021"
 license = "MIT"
 authors = ["Daniel Fat"]
@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Disable the core's default `parallel` feature: wasm32-unknown-unknown has no
 # threads, so extraction runs sequentially.
-dongler-core = { path = "../dongler-core", version = "0.3.13", default-features = false }
+dongler-core = { path = "../dongler-core", version = "0.3.14", default-features = false }
 wasm-bindgen = "0.2"
 serde_json = "1.0"
 console_error_panic_hook = { version = "0.1", optional = true }

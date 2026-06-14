@@ -102,34 +102,44 @@ fn nearest_cell(cells: &[TableCellPrediction], span: &BBox) -> usize {
 }
 
 /// Join a cell's spans into reading order: top-to-bottom (descending `y` in PDF
-/// user space), then left-to-right. Spans on the same visual line share a `y`
-/// band, so the secondary `x` sort orders words within a line.
+/// user space), then left-to-right. Spacing is **gap-aware** — many PDFs position
+/// one glyph per run, so a naive space-between-spans yields `P A R T`. We insert a
+/// space only when the horizontal gap to the previous span on the same line
+/// exceeds a fraction of the glyph height (a word break); abutting glyphs glue
+/// into words. A line change always inserts a space.
 fn join_cell_text(span_idxs: &[usize], span_boxes: &[BBox], span_texts: &[String]) -> String {
-    let mut idxs = span_idxs.to_vec();
+    let mut idxs: Vec<usize> = span_idxs
+        .iter()
+        .copied()
+        .filter(|&i| !span_texts[i].trim().is_empty())
+        .collect();
     idxs.sort_by(|&a, &b| {
         let (ba, bb) = (&span_boxes[a], &span_boxes[b]);
-        // y descending → top first; group near-equal y into the same line first.
-        match bb.y.partial_cmp(&ba.y).unwrap_or(std::cmp::Ordering::Equal) {
-            std::cmp::Ordering::Equal => {
-                ba.x.partial_cmp(&bb.x).unwrap_or(std::cmp::Ordering::Equal)
-            }
-            // Treat spans within ~half a line height as the same line, ordered x.
-            _ if (ba.y - bb.y).abs() < line_band(ba, bb) => {
-                ba.x.partial_cmp(&bb.x).unwrap_or(std::cmp::Ordering::Equal)
-            }
-            other => other,
+        if (ba.y - bb.y).abs() < line_band(ba, bb) {
+            // Same line → order left-to-right.
+            ba.x.partial_cmp(&bb.x).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            // Different line → top first (larger y in PDF user space).
+            bb.y.partial_cmp(&ba.y).unwrap_or(std::cmp::Ordering::Equal)
         }
     });
+
     let mut out = String::new();
-    for idx in idxs {
+    let mut prev: Option<&BBox> = None;
+    for &idx in &idxs {
+        let b = &span_boxes[idx];
         let t = span_texts[idx].trim();
-        if t.is_empty() {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push(' ');
+        if let Some(p) = prev {
+            let same_line = (p.y - b.y).abs() < line_band(p, b);
+            let gap = b.x - (p.x + p.width);
+            // Word break: different line, or a horizontal gap wider than ~a quarter
+            // of the glyph height. Abutting / overlapping glyphs (gap ≤ that) glue.
+            if !same_line || gap > 0.25 * b.height.max(p.height).max(1.0) {
+                out.push(' ');
+            }
         }
         out.push_str(t);
+        prev = Some(b);
     }
     out.trim().to_string()
 }
@@ -204,6 +214,22 @@ mod tests {
         ]);
         let out = fill_cells_from_text_layer(&cells, &boxes, &texts, 4.0);
         assert_eq!(out[0].text, "Net income total");
+    }
+
+    #[test]
+    fn per_glyph_spans_glue_into_words_by_gap() {
+        // One glyph per span (the per-glyph-Tj PDFs this fixes). Abutting glyphs
+        // P,A,R,T (right edge == next left) glue; a wide gap before "X" breaks.
+        let cells = vec![cell(0, 0, 0.0, 0.0, 100.0, 20.0)];
+        let (boxes, texts) = split(vec![
+            span(0.0, 5.0, 5.0, 10.0, "P"),
+            span(5.0, 5.0, 5.0, 10.0, "A"),
+            span(10.0, 5.0, 5.0, 10.0, "R"),
+            span(15.0, 5.0, 5.0, 10.0, "T"),
+            span(35.0, 5.0, 5.0, 10.0, "X"), // gap 35-20=15 >> 2.5 → word break
+        ]);
+        let out = fill_cells_from_text_layer(&cells, &boxes, &texts, 4.0);
+        assert_eq!(out[0].text, "PART X");
     }
 
     #[test]

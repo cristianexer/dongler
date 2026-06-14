@@ -181,7 +181,7 @@ impl Pipeline {
                     table.cells = cells;
                     table.provenance = Some(Provenance {
                         text_source: TextSource::TextLayer,
-                        detector: Some("SLANet-plus@plus".to_owned()),
+                        detector: Some(format!("{}@{}", entry.name, entry.version)),
                         confidence: None,
                     });
                 }

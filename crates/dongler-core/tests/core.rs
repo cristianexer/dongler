@@ -2927,6 +2927,28 @@ fn table_pdf() -> Vec<u8> {
     )
 }
 
+#[test]
+fn extract_pdf_spans_returns_raw_geometry_for_all_text() {
+    // `extract_pdf_spans` exposes raw text-layer spans (with geometry) regardless
+    // of how block assembly later folds them — the input the hybrid table path
+    // snaps model cells to.
+    let pages = dongler_core::pdf::extract_pdf_spans(&table_pdf()).expect("spans");
+    assert_eq!(pages.len(), 1);
+    let page = &pages[0];
+    assert_eq!(page.page_number, 1);
+    assert!((page.width - 612.0).abs() < 1.0 && (page.height - 792.0).abs() < 1.0);
+
+    let texts: Vec<&str> = page.spans.iter().map(|s| s.text.trim()).collect();
+    for needle in ["Name", "Value", "Alpha", "42"] {
+        assert!(texts.iter().any(|t| t.contains(needle)), "missing {needle}: {texts:?}");
+    }
+    // Every span carries a real, on-page bbox in PDF user space (y-up, near top).
+    for s in &page.spans {
+        assert!(s.bbox.width > 0.0 && s.bbox.height > 0.0, "degenerate bbox: {s:?}");
+        assert!(s.bbox.y > 600.0 && s.bbox.y < 792.0, "y out of range: {s:?}");
+    }
+}
+
 fn fragmented_word_pdf() -> Vec<u8> {
     pdf_fixture(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",

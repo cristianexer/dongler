@@ -27,12 +27,16 @@ enum Commands {
         #[arg(long)]
         pages: Option<String>,
     },
-    /// Run the hybrid pipeline (triage + reading order + IR v2). The
-    /// deterministic, model-free path; ML stages are a future opt-in.
+    /// Run the hybrid pipeline (triage + reading order + IR v2). Deterministic and
+    /// model-free by default; `--ml` adds ONNX table-structure recognition
+    /// (requires a build with the `ml` feature).
     Convert {
         path: PathBuf,
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
         format: OutputFormat,
+        /// Enable ML stages (table-structure recognition). Needs `--features ml`.
+        #[arg(long)]
+        ml: bool,
     },
 }
 
@@ -60,11 +64,11 @@ fn run() -> Result<()> {
             format,
             pages,
         } => extract(&path, format, pages.as_deref()),
-        Commands::Convert { path, format } => convert(&path, format),
+        Commands::Convert { path, format, ml } => convert(&path, format, ml),
     }
 }
 
-fn convert(path: &Path, output_format: OutputFormat) -> Result<()> {
+fn convert(path: &Path, output_format: OutputFormat, ml: bool) -> Result<()> {
     let bytes = std::fs::read(path)
         .map_err(|e| dongler_core::DonglerError::invalid_input(format!("cannot read file: {e}")))?;
     let filename = path
@@ -72,17 +76,51 @@ fn convert(path: &Path, output_format: OutputFormat) -> Result<()> {
         .and_then(|name| name.to_str())
         .unwrap_or("input");
     let pipeline = dongler_pipeline::Pipeline::new();
-    let output = match output_format {
-        OutputFormat::Markdown => pipeline.convert_to_markdown(&bytes, filename)?,
-        OutputFormat::Json => pipeline.convert_to_json(&bytes, filename)?,
-        OutputFormat::Latex => {
-            // LaTeX still routes through the core renderer over the IR v2 doc.
-            let document = pipeline.convert_bytes(&bytes, filename)?;
-            document.to_latex()?
+
+    // The full ML document, if requested and compiled in. Falls back to the
+    // deterministic path with a clear message when the binary lacks `--features ml`.
+    let ml_document = if ml {
+        ml_convert(&pipeline, &bytes, filename)?
+    } else {
+        None
+    };
+
+    let output = match (ml_document, output_format) {
+        (Some(doc), OutputFormat::Markdown) => {
+            use dongler_core::render::{MarkdownRenderer, Renderer};
+            MarkdownRenderer.render(&doc)?
         }
+        (Some(doc), OutputFormat::Json) => {
+            use dongler_core::render::{JsonRenderer, Renderer};
+            JsonRenderer.render(&doc)?
+        }
+        (Some(doc), OutputFormat::Latex) => doc.to_latex()?,
+        (None, OutputFormat::Markdown) => pipeline.convert_to_markdown(&bytes, filename)?,
+        (None, OutputFormat::Json) => pipeline.convert_to_json(&bytes, filename)?,
+        (None, OutputFormat::Latex) => pipeline.convert_bytes(&bytes, filename)?.to_latex()?,
     };
     println!("{output}");
     Ok(())
+}
+
+#[cfg(feature = "ml")]
+fn ml_convert(
+    pipeline: &dongler_pipeline::Pipeline,
+    bytes: &[u8],
+    filename: &str,
+) -> Result<Option<dongler_core::Document>> {
+    Ok(Some(pipeline.convert(bytes, filename)?))
+}
+
+#[cfg(not(feature = "ml"))]
+fn ml_convert(
+    _pipeline: &dongler_pipeline::Pipeline,
+    _bytes: &[u8],
+    _filename: &str,
+) -> Result<Option<dongler_core::Document>> {
+    Err(dongler_core::DonglerError::invalid_input(
+        "this build has no ML support; rebuild with `--features ml` to use `convert --ml`",
+    ))
 }
 
 /// Parse a 1-based page spec like "45", "43-45", "1,5,9" into a membership test.

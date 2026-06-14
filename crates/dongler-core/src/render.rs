@@ -186,12 +186,20 @@ fn render_markdown_table(table: &TableBlock) -> String {
 /// Spanned-over grid positions are omitted from `cells`, so each cell is emitted
 /// once with its span attributes. Returns `None` if there are no cells.
 fn render_html_table_from_cells(table: &TableBlock) -> Option<String> {
-    if table.cells.is_empty() {
+    html_table_from_cells(&table.cells, table.caption.as_deref())
+}
+
+/// Build an HTML `<table>` from explicit cells (with optional caption), preserving
+/// `colspan`/`rowspan`. Public so pipeline stages that produce cells directly
+/// (e.g. the SLANet table path) render identically to the Markdown renderer.
+/// Returns `None` if `cells` is empty.
+pub fn html_table_from_cells(cells: &[crate::ir::TableCell], caption: Option<&str>) -> Option<String> {
+    if cells.is_empty() {
         return None;
     }
-    let max_row = table.cells.iter().map(|c| c.row).max()?;
+    let max_row = cells.iter().map(|c| c.row).max()?;
     let mut rows: Vec<Vec<&crate::ir::TableCell>> = vec![Vec::new(); max_row + 1];
-    for cell in &table.cells {
+    for cell in cells {
         if cell.row < rows.len() {
             rows[cell.row].push(cell);
         }
@@ -201,7 +209,7 @@ fn render_html_table_from_cells(table: &TableBlock) -> Option<String> {
     }
 
     let mut html = String::from("<table>\n");
-    if let Some(caption) = &table.caption {
+    if let Some(caption) = caption {
         let caption = caption.trim();
         if !caption.is_empty() {
             html.push_str(&format!("<caption>{}</caption>\n", html_escape(caption)));

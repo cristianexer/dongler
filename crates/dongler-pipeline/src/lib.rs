@@ -17,6 +17,8 @@ pub mod fusion;
 pub mod geometry;
 pub mod order;
 pub mod registry;
+pub mod table_fusion;
+pub mod table_structure;
 pub mod triage;
 
 mod textprovider;
@@ -102,6 +104,157 @@ impl Pipeline {
         let document = self.convert_bytes(bytes, filename)?;
         JsonRenderer.render(&document)
     }
+
+    /// Full hybrid conversion: the deterministic IR, then ML augmentation
+    /// (currently table-structure recognition via SLANet-plus). Only available
+    /// with the `ml` feature; the born-digital text + reading order are produced
+    /// deterministically first, so ML failure degrades to the deterministic
+    /// result (recorded as a document warning) rather than erroring.
+    #[cfg(feature = "ml")]
+    pub fn convert(&self, bytes: &[u8], filename: &str) -> Result<Document> {
+        let mut document = self.convert_bytes(bytes, filename)?;
+        if bytes.starts_with(b"%PDF") {
+            if let Err(err) = self.apply_table_structure(bytes, &mut document) {
+                document.warnings.push(dongler_core::ir::Warning {
+                    code: "ml.table_structure".to_owned(),
+                    severity: "warning".to_owned(),
+                    message: format!("table-structure stage skipped: {err}"),
+                    source_anchor: None,
+                });
+            }
+        }
+        Ok(document)
+    }
+
+    /// Replace each heuristic-detected table's grid with a SLANet-plus structure
+    /// prediction whose cell text is snapped from the deterministic text layer
+    /// (PRD §4.F). The heuristic table's bbox is reused as the region source; the
+    /// model decides the grid, the text layer decides the content. Per-region
+    /// failures keep that table's deterministic result.
+    #[cfg(feature = "ml")]
+    fn apply_table_structure(&self, bytes: &[u8], document: &mut Document) -> Result<()> {
+        use crate::ml::{models, raster, tables::TableEngine};
+
+        let has_table = document
+            .pages
+            .iter()
+            .any(|p| p.blocks.iter().any(|b| matches!(b, Block::Table(t) if t.bbox.is_some())));
+        if !has_table {
+            return Ok(());
+        }
+
+        let entry = crate::registry::default_for(crate::registry::ModelTask::TableStructure)
+            .ok_or_else(|| dongler_core::DonglerError::pdf("no default table-structure model"))?;
+        let onnx = models::ensure_model(entry, SLANET_ONNX_FILE)
+            .map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
+        let mut engine = TableEngine::from_onnx_path(&onnx, crate::ml::tables::SLANET_INPUT)
+            .map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
+        let pdfium = raster::bind_pdfium().map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
+
+        // Raw text-layer spans per page (kept even where tables consumed them).
+        let page_spans = dongler_core::pdf::extract_pdf_spans(bytes)?;
+
+        for page in &mut document.pages {
+            let page_index = (page.number.saturating_sub(1)) as u16;
+            let page_height = page.height.unwrap_or(0.0);
+            let spans = page_spans.iter().find(|p| p.page_number == page.number);
+
+            for block in &mut page.blocks {
+                let Block::Table(table) = block else { continue };
+                let Some(region) = table.bbox else { continue };
+                if let Some(cells) = self.table_structure_for_region(
+                    &mut engine,
+                    &pdfium,
+                    bytes,
+                    page_index,
+                    region,
+                    page_height,
+                    spans,
+                ) {
+                    if cells.is_empty() {
+                        continue;
+                    }
+                    table.html = dongler_core::render::html_table_from_cells(
+                        &cells,
+                        table.caption.as_deref(),
+                    );
+                    table.cells = cells;
+                    table.provenance = Some(Provenance {
+                        text_source: TextSource::TextLayer,
+                        detector: Some(format!("{}@{}", entry.name, entry.version)),
+                        confidence: None,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Run SLANet on one table region and snap text into its cells. Returns
+    /// `None` on any per-region ML/raster error so the caller keeps the
+    /// deterministic table.
+    #[cfg(feature = "ml")]
+    #[allow(clippy::too_many_arguments)]
+    fn table_structure_for_region(
+        &self,
+        engine: &mut crate::ml::tables::TableEngine,
+        pdfium: &pdfium_render::prelude::Pdfium,
+        bytes: &[u8],
+        page_index: u16,
+        region: BBox,
+        page_height: f32,
+        spans: Option<&dongler_core::pdf::PageSpans>,
+    ) -> Option<Vec<dongler_core::ir::TableCell>> {
+        let (crop, xform) =
+            crate::ml::raster::render_region(pdfium, bytes, page_index, region, page_height, TABLE_RENDER_DPI)
+                .ok()?;
+        let structure = engine.run(&crop).ok()?;
+
+        // Cell boxes (crop px) → PDF user space.
+        let cells: Vec<crate::table_structure::TableCellPrediction> = structure
+            .cells
+            .iter()
+            .map(|c| {
+                let pdf = xform.px_to_pdf(c.bbox.x, c.bbox.y, c.bbox.width, c.bbox.height);
+                crate::table_structure::TableCellPrediction { bbox: pdf, ..*c }
+            })
+            .collect();
+
+        // Text-layer spans whose center falls inside the table region.
+        let (span_boxes, span_texts): (Vec<BBox>, Vec<String>) = spans
+            .map(|p| {
+                p.spans
+                    .iter()
+                    .filter(|s| bbox_center_in(&s.bbox, &region))
+                    .map(|s| (s.bbox, s.text.clone()))
+                    .unzip()
+            })
+            .unwrap_or_default();
+
+        Some(crate::table_fusion::fill_cells_from_text_layer(
+            &cells,
+            &span_boxes,
+            &span_texts,
+            self.attach_radius,
+        ))
+    }
+}
+
+/// SLANet rasterization DPI for table-region crops.
+#[cfg(feature = "ml")]
+const TABLE_RENDER_DPI: f32 = 150.0;
+/// SLANet ONNX artifact filename in the registry's HF repo (verified against
+/// `bdatdo0601/slanet-1m-onnx`). The structure vocabulary is embedded in code
+/// ([`crate::table_structure::slanet_char_dict`]), so no companion file.
+#[cfg(feature = "ml")]
+const SLANET_ONNX_FILE: &str = "slanet_1m.onnx";
+
+/// True if `inner`'s center lies within `outer`.
+#[cfg(feature = "ml")]
+fn bbox_center_in(inner: &BBox, outer: &BBox) -> bool {
+    let cx = inner.x + inner.width / 2.0;
+    let cy = inner.y + inner.height / 2.0;
+    cx >= outer.x && cx <= outer.x + outer.width && cy >= outer.y && cy <= outer.y + outer.height
 }
 
 /// Reorder a page's blocks into reading order using XY-Cut++ over their bounding

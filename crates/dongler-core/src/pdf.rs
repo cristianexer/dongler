@@ -47,6 +47,26 @@ struct PageSeed {
 struct PageExtraction {
     page: Page,
     text: String,
+    spans: Vec<SpanGeom>,
+}
+
+/// A single text-layer fragment with geometry, in PDF user space (y-up). Exposed
+/// (via [`extract_pdf_spans`]) so the hybrid pipeline can snap model-detected
+/// regions/cells to real text without re-parsing the PDF. Independent of block
+/// assembly, so spans consumed by table detection are still present here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpanGeom {
+    pub bbox: BBox,
+    pub text: String,
+}
+
+/// All text-layer spans for one page, with the page's dimensions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageSpans {
+    pub page_number: usize,
+    pub width: f32,
+    pub height: f32,
+    pub spans: Vec<SpanGeom>,
 }
 
 #[derive(Debug, Clone)]
@@ -244,7 +264,73 @@ impl Matrix {
     }
 }
 
+/// The shared result of parsing a PDF into per-page extractions, before the
+/// Document/spans views are built from it.
+struct ParsedPdf {
+    page_extractions: Vec<PageExtraction>,
+    document_warnings: Vec<crate::ir::Warning>,
+    title: Option<String>,
+    encrypted: bool,
+}
+
 pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<Document> {
+    let parsed = parse_pdf_pages(bytes)?;
+    let ParsedPdf {
+        page_extractions,
+        document_warnings,
+        title,
+        encrypted,
+    } = parsed;
+
+    let mut pages = Vec::with_capacity(page_extractions.len());
+    let mut all_text = String::new();
+    let mut assets = Vec::new();
+
+    for extraction in page_extractions {
+        all_text.push_str(&extraction.text);
+        all_text.push('\n');
+        assets.extend(extraction.page.assets.clone());
+        pages.push(extraction.page);
+    }
+
+    Ok(Document {
+        schema_version: SCHEMA_VERSION.to_owned(),
+        metadata: Metadata {
+            format: "pdf".to_owned(),
+            engine: engine_name.to_owned(),
+            source: source.path.clone(),
+            title,
+            character_count: all_text.chars().count(),
+            word_count: all_text.split_whitespace().count(),
+            block_count: pages.iter().map(|page| page.blocks.len()).sum(),
+            file_size_bytes: Some(bytes.len() as u64),
+            pdf_version: pdf_version(bytes),
+            encrypted,
+        },
+        pages,
+        assets,
+        warnings: document_warnings,
+    })
+}
+
+/// Extract every text-layer span (with geometry, in PDF user space) per page.
+/// Unlike [`extract_pdf`], this exposes spans that block assembly later folds into
+/// tables/paragraphs — the raw input the hybrid pipeline snaps model regions to.
+pub fn extract_pdf_spans(bytes: &[u8]) -> Result<Vec<PageSpans>> {
+    let parsed = parse_pdf_pages(bytes)?;
+    Ok(parsed
+        .page_extractions
+        .into_iter()
+        .map(|e| PageSpans {
+            page_number: e.page.number,
+            width: e.page.width.unwrap_or(0.0),
+            height: e.page.height.unwrap_or(0.0),
+            spans: e.spans,
+        })
+        .collect())
+}
+
+fn parse_pdf_pages(bytes: &[u8]) -> Result<ParsedPdf> {
     if !bytes.starts_with(b"%PDF-") {
         return Err(DonglerError::pdf("missing %PDF header"));
     }
@@ -335,34 +421,11 @@ pub fn extract_pdf(bytes: &[u8], source: &Source, engine_name: &str) -> Result<D
     #[cfg(not(feature = "parallel"))]
     let page_extractions = page_seeds.iter().map(extract_one).collect::<Vec<_>>();
 
-    let mut pages = Vec::with_capacity(page_extractions.len());
-    let mut all_text = String::new();
-    let mut assets = Vec::new();
-
-    for extraction in page_extractions {
-        all_text.push_str(&extraction.text);
-        all_text.push('\n');
-        assets.extend(extraction.page.assets.clone());
-        pages.push(extraction.page);
-    }
-
-    Ok(Document {
-        schema_version: SCHEMA_VERSION.to_owned(),
-        metadata: Metadata {
-            format: "pdf".to_owned(),
-            engine: engine_name.to_owned(),
-            source: source.path.clone(),
-            title,
-            character_count: all_text.chars().count(),
-            word_count: all_text.split_whitespace().count(),
-            block_count: pages.iter().map(|page| page.blocks.len()).sum(),
-            file_size_bytes: Some(bytes.len() as u64),
-            pdf_version: pdf_version(bytes),
-            encrypted,
-        },
-        pages,
-        assets,
-        warnings: document_warnings,
+    Ok(ParsedPdf {
+        page_extractions,
+        document_warnings,
+        title,
+        encrypted,
     })
 }
 
@@ -467,6 +530,20 @@ fn extract_page(
     };
 
     let lines = group_text_runs(extraction.text_runs);
+
+    // Raw text-layer spans (one per positioned run), in PDF user space, captured
+    // before block assembly folds/consumes them — the hybrid pipeline snaps
+    // model regions to these (see `extract_pdf_spans`).
+    let spans: Vec<SpanGeom> = lines
+        .iter()
+        .flat_map(|line| line.runs.iter())
+        .filter(|run| !run.text.trim().is_empty())
+        .map(|run| SpanGeom {
+            bbox: run.bbox,
+            text: run.text.clone(),
+        })
+        .collect();
+
     let mut blocks = build_blocks(seed.number, &lines, &extraction.edges);
     if blocks.is_empty() && !extraction.images.is_empty() {
         blocks.extend(image_figure_blocks(seed.number, &extraction.images));
@@ -495,7 +572,7 @@ fn extract_page(
         warnings, ..Default::default()
     };
 
-    PageExtraction { page, text }
+    PageExtraction { page, text, spans }
 }
 
 fn interpret_content_stream(

@@ -96,6 +96,20 @@ pdfium/poppler), parses pages in parallel, and runs no per-page model — so it
 sustains **~90 born-digital pages per second** on a single host with no GPU while
 producing the structured output above.
 
+## Experimental: hybrid ML table structure
+
+All numbers above are the **deterministic, model-free** engine — what every
+release ships and what `dongler.load` / `convert` / `extract` use by default.
+
+A separate, opt-in path (`convert --ml`, builds with the `ml` feature) recognizes
+table **structure** with a local ONNX model and snaps cell text from the text
+layer (hallucination-free by construction). It is **preview-grade and not yet on
+the scoreboard**: the end-to-end plumbing is verified, but its accuracy is bounded
+by the geometric table-region detector that feeds the model — clean table regions
+from a layout-detection model are the next milestone, at which point a TEDS
+result on FinTabNet.c lands here. Until then, the deterministic numbers above are
+the ones to rely on.
+
 ## Reproduce
 
 ```bash

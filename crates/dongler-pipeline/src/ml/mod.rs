@@ -12,8 +12,10 @@
 //! registry).
 
 pub mod layout;
+pub mod models;
 pub mod preprocess;
 pub mod raster;
+pub mod tables;
 
 /// Errors from the ML stages.
 #[derive(Debug, thiserror::Error)]
@@ -24,4 +26,16 @@ pub enum MlError {
     Pdfium(#[from] pdfium_render::prelude::PdfiumError),
     #[error("model produced no usable output")]
     NoOutput,
+    #[error("model cache i/o: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("model download failed: {0}")]
+    Download(String),
+    #[error("sha256 mismatch for {path}: expected {expected}, got {got}")]
+    Sha256Mismatch {
+        path: String,
+        expected: String,
+        got: String,
+    },
+    #[error("model artifact not found in cache (offline): {0}")]
+    OfflineMissing(String),
 }

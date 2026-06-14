@@ -22,9 +22,11 @@ image = { version = "0.25", optional = true }
 fast_image_resize = { version = "6", optional = true }
 pdfium-render = { version = "0.9", optional = true }
 hf-hub = { version = "0.5", optional = true, default-features = false, features = ["ureq", "rustls-tls"] }
+sha2 = { version = "0.10", optional = true }
+dirs = { version = "5", optional = true }
 
 [features]
 default = []
 # Enables the ML stages (layout/OCR/table inference) and PDF rasterization.
 # Requires ONNX Runtime + a pdfium binary at runtime.
-ml = ["dep:ort", "dep:ndarray", "dep:image", "dep:fast_image_resize", "dep:pdfium-render", "dep:hf-hub"]
+ml = ["dep:ort", "dep:ndarray", "dep:image", "dep:fast_image_resize", "dep:pdfium-render", "dep:hf-hub", "dep:sha2", "dep:dirs"]

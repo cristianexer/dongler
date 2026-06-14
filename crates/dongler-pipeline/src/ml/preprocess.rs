@@ -35,6 +35,81 @@ pub fn to_nchw_tensor(img: &RgbImage, size: u32) -> (Array4<f32>, (f32, f32)) {
     (tensor, (scale_x, scale_y))
 }
 
+/// Aspect-preserving resize metadata, recording how a source image was mapped
+/// into a square model input so model-space coordinates can be mapped back.
+/// The source is scaled by `scale` (longest side → `target`) and centered with
+/// `pad_x`/`pad_y` letterbox padding (in model-input pixels).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResizeMeta {
+    pub scale: f32,
+    pub pad_x: f32,
+    pub pad_y: f32,
+    pub target: u32,
+}
+
+impl ResizeMeta {
+    /// Map a model-input pixel coordinate back to source-image pixels: undo the
+    /// letterbox pad, then the scale.
+    pub fn input_to_src(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            (x - self.pad_x) / self.scale,
+            (y - self.pad_y) / self.scale,
+        )
+    }
+
+    /// Map a model-input pixel box `(x, y, w, h)` back to a source-image box.
+    pub fn input_box_to_src(&self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
+        let (sx, sy) = self.input_to_src(x, y);
+        (sx, sy, w / self.scale, h / self.scale)
+    }
+}
+
+/// Resize `img` aspect-preserving to fit a `target`×`target` square, letterbox-pad
+/// to fill it, normalize with per-channel `mean`/`std` (Paddle/SLANet convention,
+/// values scaled to `0..1` first), and pack into an NCHW `[1, 3, target, target]`
+/// tensor. Returns the tensor and a [`ResizeMeta`] for inverse mapping.
+///
+/// **VERIFY (spike PR0):** padding style (letterbox vs. bottom-right), channel
+/// order (RGB vs BGR), and the exact mean/std for the chosen SLANet export.
+pub fn to_nchw_normalized(
+    img: &RgbImage,
+    target: u32,
+    mean: [f32; 3],
+    std: [f32; 3],
+) -> (Array4<f32>, ResizeMeta) {
+    let target = target.max(1);
+    let (ow, oh) = (img.width().max(1), img.height().max(1));
+    let scale = (target as f32 / ow as f32).min(target as f32 / oh as f32);
+    let nw = ((ow as f32 * scale).round() as u32).clamp(1, target);
+    let nh = ((oh as f32 * scale).round() as u32).clamp(1, target);
+    let resized = image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle);
+    let pad_x = ((target - nw) / 2) as f32;
+    let pad_y = ((target - nh) / 2) as f32;
+
+    let t = target as usize;
+    let (px, py) = (pad_x as u32, pad_y as u32);
+    let tensor = Array4::from_shape_fn((1, 3, t, t), |(_, c, y, x)| {
+        let (xi, yi) = (x as u32, y as u32);
+        let inside = xi >= px && xi < px + nw && yi >= py && yi < py + nh;
+        let raw = if inside {
+            resized.get_pixel(xi - px, yi - py)[c] as f32 / 255.0
+        } else {
+            0.0
+        };
+        (raw - mean[c]) / std[c]
+    });
+
+    (
+        tensor,
+        ResizeMeta {
+            scale,
+            pad_x,
+            pad_y,
+            target,
+        },
+    )
+}
+
 /// Decode RT-DETR-style outputs: `boxes` as `[N, 4]` normalized `cxcywh` in
 /// `0..1` and `scores` as `[N, num_classes]`. Keeps detections whose top class
 /// score ≥ `threshold`, mapping boxes into pixel coordinates of an
@@ -114,5 +189,36 @@ mod tests {
         let boxes = vec![[0.5, 0.5, 0.2, 0.2]];
         let scores = vec![vec![0.3, 0.1]];
         assert!(decode_detections(&boxes, &scores, 0.5, 10.0, 10.0).is_empty());
+    }
+
+    #[test]
+    fn normalized_tensor_shape_and_padding_metadata() {
+        // 40x20 image into a 100x100 square: scale = 100/40 = 2.5, nw=100, nh=50,
+        // letterbox pad_y = (100-50)/2 = 25, pad_x = 0.
+        let img = solid(40, 20, [255, 255, 255]);
+        let (t, meta) = to_nchw_normalized(&img, 100, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        assert_eq!(t.shape(), &[1, 3, 100, 100]);
+        assert!((meta.scale - 2.5).abs() < 1e-6);
+        assert_eq!(meta.pad_x, 0.0);
+        assert_eq!(meta.pad_y, 25.0);
+        // White pixel inside the content band normalizes to 1.0; pad area is 0.
+        assert!((t[[0, 0, 30, 10]] - 1.0).abs() < 1e-6); // inside (y=30 in [25,75))
+        assert!(t[[0, 0, 5, 10]].abs() < 1e-6); // pad band (y=5 < 25)
+    }
+
+    #[test]
+    fn resize_meta_inverse_round_trips_a_box() {
+        let meta = ResizeMeta {
+            scale: 2.5,
+            pad_x: 0.0,
+            pad_y: 25.0,
+            target: 100,
+        };
+        // A model-input box at (10, 35) size (50, 25) → source (4, 4) size (20, 10).
+        let (x, y, w, h) = meta.input_box_to_src(10.0, 35.0, 50.0, 25.0);
+        assert!((x - 4.0).abs() < 1e-6);
+        assert!((y - 4.0).abs() < 1e-6);
+        assert!((w - 20.0).abs() < 1e-6);
+        assert!((h - 10.0).abs() < 1e-6);
     }
 }

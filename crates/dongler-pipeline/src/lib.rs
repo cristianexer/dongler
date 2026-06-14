@@ -17,6 +17,8 @@ pub mod fusion;
 pub mod geometry;
 pub mod order;
 pub mod registry;
+pub mod table_fusion;
+pub mod table_structure;
 pub mod triage;
 
 mod textprovider;

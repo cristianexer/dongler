@@ -231,6 +231,57 @@ mod tests {
     }
 
     #[test]
+    fn end_to_end_slanet_grid_renders_to_spanning_html() {
+        // A 2-column table whose header spans both columns — the exact shape
+        // SLANet produces and that text-snap + the renderer must round-trip into
+        // valid colspan HTML (the form TEDS scores).
+        use crate::table_structure::{parse_structure_tokens, TableCellPrediction};
+        let tokens: Vec<String> = [
+            "<thead>", "<tr>", "<td", " colspan=\"2\"", ">", "</tr>", "</thead>", "<tbody>",
+            "<tr>", "<td>", "<td>", "</tr>", "</tbody>",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // Header box spans the top; two data cells below it.
+        let boxes: Vec<BBox> = tokens
+            .iter()
+            .map(|t| match t.as_str() {
+                "<td" => BBox { x: 0.0, y: 20.0, width: 100.0, height: 10.0 },
+                "<td>" => BBox { x: 0.0, y: 0.0, width: 50.0, height: 10.0 },
+                _ => BBox { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            })
+            .collect();
+        let pred: Vec<TableCellPrediction> = parse_structure_tokens(&tokens, &boxes);
+        // Two data cells sit side by side on the lower band; header spans the top.
+        let data_cells = pred.iter().filter(|c| !c.is_header).count();
+        assert_eq!(data_cells, 2);
+
+        let (sb, st) = split(vec![
+            span(5.0, 22.0, 40.0, 6.0, "Results"),   // in header span
+            span(5.0, 2.0, 20.0, 6.0, "Left"),       // data col 0
+            span(60.0, 2.0, 20.0, 6.0, "Right"),     // data col 1 (x=60 → second half)
+        ]);
+        // Header box only covers x[0,100] y[20,30]; widen data cells so spans land.
+        let mut cells = pred;
+        for c in &mut cells {
+            if !c.is_header {
+                c.bbox.width = 50.0;
+                if c.col == 1 {
+                    c.bbox.x = 50.0;
+                }
+            }
+        }
+        let ir_cells = fill_cells_from_text_layer(&cells, &sb, &st, 4.0);
+        let html = dongler_core::render::html_table_from_cells(&ir_cells, None)
+            .expect("html");
+        assert!(html.contains("colspan=\"2\""), "header should span 2 cols: {html}");
+        assert!(html.contains("Results") && html.contains("Left") && html.contains("Right"), "{html}");
+        // Header cell is a <th>; data cells are <td>.
+        assert!(html.contains("<th colspan=\"2\">Results</th>"), "{html}");
+    }
+
+    #[test]
     fn preserves_span_attributes_from_prediction() {
         let mut c = cell(0, 0, 0.0, 0.0, 100.0, 20.0);
         c.col_span = 2;

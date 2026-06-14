@@ -46,9 +46,50 @@ pub struct TableStructure {
     pub tokens: Vec<String>,
 }
 
-/// Structure tokens that terminate the sequence. SLANet exports vary; we stop on
-/// any of these (and at the end of the timestep axis). **VERIFY (spike PR0).**
-const EOS_TOKENS: &[&str] = &["<eos>", "</html>", "</body>", "<pad>", "<sos>", ""];
+/// Structure tokens that terminate the sequence. PaddleOCR SLANet uses `eos`
+/// (index 29); `sos` (index 0) is skipped, not terminal. The HTML variants are
+/// defensive for other exports. The empty string guards an out-of-range id.
+const EOS_TOKENS: &[&str] = &["eos", "</html>", "</body>", ""];
+
+/// The fixed PaddleOCR SLANet structure-token vocabulary, indexed by class id:
+/// `sos` (0) + the 28 table tokens from the model's `inference.yml` (1..=28) +
+/// `eos` (29) — matching `TableLabelDecode.add_special_char`. The model's logits
+/// have 30 classes; `decode_slanet` argmaxes into this list.
+pub fn slanet_char_dict() -> Vec<String> {
+    const TOKENS: &[&str] = &[
+        "sos",
+        "<thead>",
+        "<tr>",
+        "<td>",
+        "</td>",
+        "</tr>",
+        "</thead>",
+        "<tbody>",
+        "</tbody>",
+        "<td",
+        " colspan=\"5\"",
+        ">",
+        " colspan=\"2\"",
+        " colspan=\"3\"",
+        " rowspan=\"2\"",
+        " colspan=\"4\"",
+        " colspan=\"6\"",
+        " rowspan=\"3\"",
+        " colspan=\"9\"",
+        " colspan=\"10\"",
+        " colspan=\"7\"",
+        " rowspan=\"4\"",
+        " rowspan=\"5\"",
+        " rowspan=\"9\"",
+        " colspan=\"8\"",
+        " rowspan=\"8\"",
+        " rowspan=\"6\"",
+        " rowspan=\"7\"",
+        " rowspan=\"10\"",
+        "eos",
+    ];
+    TOKENS.iter().map(|s| s.to_string()).collect()
+}
 
 /// Decode SLANet's two output tensors into a typed grid.
 ///
@@ -366,8 +407,8 @@ mod tests {
 
     #[test]
     fn decode_argmaxes_logits_and_denormalizes_boxes() {
-        // Vocab: [0]="<tr>", [1]="<td>", [2]="</tr>", [3]="<eos>".
-        let dict = toks(&["<tr>", "<td>", "</tr>", "<eos>"]);
+        // Vocab: [0]="<tr>", [1]="<td>", [2]="</tr>", [3]="eos".
+        let dict = toks(&["<tr>", "<td>", "</tr>", "eos"]);
         // 3 real steps then eos. logits [1, 4, 4].
         let logits = vec![
             5.0, 0.0, 0.0, 0.0, // <tr>
@@ -391,6 +432,34 @@ mod tests {
         assert!((c.bbox.y - 40.0).abs() < 1e-4);
         assert!((c.bbox.width - 20.0).abs() < 1e-4);
         assert!((c.bbox.height - 60.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn slanet_dict_has_30_tokens_with_sos_and_eos() {
+        let d = slanet_char_dict();
+        assert_eq!(d.len(), 30, "sos + 28 table tokens + eos");
+        assert_eq!(d[0], "sos");
+        assert_eq!(d[29], "eos");
+        assert_eq!(d[3], "<td>");
+        assert_eq!(d[9], "<td");
+    }
+
+    #[test]
+    fn decode_with_real_slanet_dict_builds_grid_and_stops_at_eos() {
+        let dict = slanet_char_dict();
+        let v = dict.len(); // 30
+        let idx = |tok: &str| dict.iter().position(|t| t == tok).unwrap();
+        // Sequence: <tr> <td> <td> </tr> eos  → one row, two cells.
+        let seq = ["<tr>", "<td>", "<td>", "</tr>", "eos"];
+        let mut logits = vec![0.0f32; seq.len() * v];
+        for (t, tok) in seq.iter().enumerate() {
+            logits[t * v + idx(tok)] = 9.0;
+        }
+        let bbox = vec![0.0f32; seq.len() * 4];
+        let s = decode_slanet(&logits, &[1, seq.len() as i64, v as i64], &bbox, &[1, seq.len() as i64, 4], &dict, 10.0, 10.0);
+        assert_eq!(s.tokens, toks(&["<tr>", "<td>", "<td>", "</tr>"]), "stops at eos");
+        assert_eq!(s.cells.len(), 2);
+        assert_eq!((s.cells[1].row, s.cells[1].col), (0, 1));
     }
 
     #[test]

@@ -143,13 +143,11 @@ impl Pipeline {
             return Ok(());
         }
 
-        let entry = crate::registry::get("SLANet-plus")
-            .ok_or_else(|| dongler_core::DonglerError::pdf("SLANet-plus not in registry"))?;
+        let entry = crate::registry::default_for(crate::registry::ModelTask::TableStructure)
+            .ok_or_else(|| dongler_core::DonglerError::pdf("no default table-structure model"))?;
         let onnx = models::ensure_model(entry, SLANET_ONNX_FILE)
             .map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
-        let dict = models::ensure_file(entry, SLANET_DICT_FILE)
-            .map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
-        let mut engine = TableEngine::from_onnx_path(&onnx, &dict, crate::ml::tables::SLANET_INPUT)
+        let mut engine = TableEngine::from_onnx_path(&onnx, crate::ml::tables::SLANET_INPUT)
             .map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
         let pdfium = raster::bind_pdfium().map_err(|e| dongler_core::DonglerError::pdf(e.to_string()))?;
 
@@ -245,12 +243,11 @@ impl Pipeline {
 /// SLANet rasterization DPI for table-region crops.
 #[cfg(feature = "ml")]
 const TABLE_RENDER_DPI: f32 = 150.0;
-/// SLANet ONNX artifact + structure char-dict filenames in the HF repo.
-/// **VERIFY (spike PR0)** against the chosen RapidAI/RapidTable export.
+/// SLANet ONNX artifact filename in the registry's HF repo (verified against
+/// `bdatdo0601/slanet-1m-onnx`). The structure vocabulary is embedded in code
+/// ([`crate::table_structure::slanet_char_dict`]), so no companion file.
 #[cfg(feature = "ml")]
-const SLANET_ONNX_FILE: &str = "slanet-plus.onnx";
-#[cfg(feature = "ml")]
-const SLANET_DICT_FILE: &str = "table_structure_dict.txt";
+const SLANET_ONNX_FILE: &str = "slanet_1m.onnx";
 
 /// True if `inner`'s center lies within `outer`.
 #[cfg(feature = "ml")]

@@ -9,58 +9,57 @@
 
 use crate::ml::preprocess::to_nchw_normalized;
 use crate::ml::MlError;
-use crate::table_structure::{decode_slanet, TableStructure};
+use crate::table_structure::{decode_slanet, slanet_char_dict, TableStructure};
 use image::RgbImage;
 use ort::session::Session;
 use std::path::Path;
 
-/// Paddle/SLANet default normalization. **VERIFY (spike PR0)** against the chosen
-/// RapidTable ONNX export.
+/// ImageNet mean/std (applied to BGR channels in order), from the model's
+/// `inference.yml` `NormalizeImage`.
 pub const SLANET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 pub const SLANET_STD: [f32; 3] = [0.229, 0.224, 0.225];
-/// SLANet square input side. **VERIFY (spike PR0)** (PP-Structure uses 488).
+/// SLANet square input side (`ResizeTableImage max_len: 488`).
 pub const SLANET_INPUT: u32 = 488;
 
-/// A loaded SLANet-plus table-structure model.
+/// A loaded SLANet table-structure model.
 pub struct TableEngine {
     session: Session,
     input_size: u32,
     mean: [f32; 3],
     std: [f32; 3],
-    /// Structure-token vocabulary, indexed by class id.
+    /// Structure-token vocabulary, indexed by class id (`sos` + 28 tokens + `eos`).
     char_dict: Vec<String>,
 }
 
 impl TableEngine {
-    /// Load the ONNX model and its structure char-dict (one token per line).
+    /// Load the SLANet ONNX model. The structure-token vocabulary is the fixed
+    /// PaddleOCR SLANet dictionary ([`slanet_char_dict`]); no companion file.
     pub fn from_onnx_path(
         model_path: impl AsRef<Path>,
-        dict_path: impl AsRef<Path>,
         input_size: u32,
     ) -> Result<Self, MlError> {
         let session = Session::builder()?.commit_from_file(model_path)?;
-        let dict_text = std::fs::read_to_string(dict_path)?;
-        let char_dict: Vec<String> = dict_text.lines().map(|l| l.to_string()).collect();
         Ok(Self {
             session,
             input_size,
             mean: SLANET_MEAN,
             std: SLANET_STD,
-            char_dict,
+            char_dict: slanet_char_dict(),
         })
     }
 
     /// Run table-structure recognition on a region crop. Returns the decoded grid
     /// with cell boxes mapped back to **crop pixel space**.
     pub fn run(&mut self, crop: &RgbImage) -> Result<TableStructure, MlError> {
-        let (tensor, meta) =
-            to_nchw_normalized(crop, self.input_size, self.mean, self.std);
+        // SLANet expects BGR (its `DecodeImage` uses `img_mode: BGR`).
+        let (tensor, _meta) =
+            to_nchw_normalized(crop, self.input_size, self.mean, self.std, true);
         let input = ort::value::Value::from_array(tensor)?;
         let outputs = self.session.run(ort::inputs![input])?;
 
         // Collect f32 outputs as (shape, data). SLANet emits two: structure logits
-        // [1, T, V] and per-step bbox [1, T, 4]. Output names/order vary by export
-        // (VERIFY spike PR0), so identify by trailing dimension rather than name.
+        // [1, T, 30] and per-step bbox [1, T, 4], in the order [bbox, structure].
+        // We identify them by trailing dimension so output order is irrelevant.
         let mut tensors: Vec<(Vec<i64>, Vec<f32>)> = Vec::new();
         for (_name, value) in outputs.iter() {
             if let Ok((shape, data)) = value.try_extract_tensor::<f32>() {
@@ -69,27 +68,20 @@ impl TableEngine {
         }
         let (struct_shape, struct_data, bbox_shape, bbox_data) = pick_outputs(&tensors)?;
 
-        let input_dim = self.input_size as f32;
-        let mut structure = decode_slanet(
+        // SLANet's bbox head outputs `xyxy` normalized to the original crop
+        // (PaddleOCR / rapid_table convention), so scaling by the crop's own
+        // pixel dimensions yields boxes directly in crop pixel space — no
+        // resize-inverse needed.
+        let (cw, ch) = (crop.width() as f32, crop.height() as f32);
+        Ok(decode_slanet(
             struct_data,
             struct_shape,
             bbox_data,
             bbox_shape,
             &self.char_dict,
-            input_dim,
-            input_dim,
-        );
-
-        // Map model-input pixel boxes back into crop pixel space.
-        for cell in &mut structure.cells {
-            let (x, y, w, h) =
-                meta.input_box_to_src(cell.bbox.x, cell.bbox.y, cell.bbox.width, cell.bbox.height);
-            cell.bbox.x = x;
-            cell.bbox.y = y;
-            cell.bbox.width = w;
-            cell.bbox.height = h;
-        }
-        Ok(structure)
+            cw,
+            ch,
+        ))
     }
 }
 

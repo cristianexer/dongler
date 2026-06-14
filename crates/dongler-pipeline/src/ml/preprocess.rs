@@ -37,8 +37,10 @@ pub fn to_nchw_tensor(img: &RgbImage, size: u32) -> (Array4<f32>, (f32, f32)) {
 
 /// Aspect-preserving resize metadata, recording how a source image was mapped
 /// into a square model input so model-space coordinates can be mapped back.
-/// The source is scaled by `scale` (longest side → `target`) and centered with
-/// `pad_x`/`pad_y` letterbox padding (in model-input pixels).
+/// The source is scaled by `scale` (longest side → `target`) and padded to the
+/// square with `pad_x`/`pad_y` (in model-input pixels). SLANet pads at the
+/// top-left (`pad_x = pad_y = 0`), confirmed against the model's `inference.yml`
+/// (`PaddingTableImage`, `ResizeTableImage max_len: 488`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResizeMeta {
     pub scale: f32,
@@ -64,18 +66,22 @@ impl ResizeMeta {
     }
 }
 
-/// Resize `img` aspect-preserving to fit a `target`×`target` square, letterbox-pad
-/// to fill it, normalize with per-channel `mean`/`std` (Paddle/SLANet convention,
-/// values scaled to `0..1` first), and pack into an NCHW `[1, 3, target, target]`
-/// tensor. Returns the tensor and a [`ResizeMeta`] for inverse mapping.
+/// Resize `img` aspect-preserving so the longest side is `target`, pad to a
+/// `target`×`target` square at the **top-left** (content origin `(0,0)`),
+/// normalize with per-channel `mean`/`std` (values scaled to `0..1` first), and
+/// pack into an NCHW `[1, 3, target, target]` tensor. When `bgr` is set the
+/// channel order is flipped (model channel 0 ← blue) to match a model trained on
+/// OpenCV BGR input. Returns the tensor and a [`ResizeMeta`] for inverse mapping.
 ///
-/// **VERIFY (spike PR0):** padding style (letterbox vs. bottom-right), channel
-/// order (RGB vs BGR), and the exact mean/std for the chosen SLANet export.
+/// This mirrors SLANet's documented `inference.yml` pipeline exactly:
+/// `DecodeImage(BGR)` → `ResizeTableImage(max_len=488)` → `NormalizeImage(mean,
+/// std, scale=1/255)` → `PaddingTableImage(488)` (top-left) → `ToCHWImage`.
 pub fn to_nchw_normalized(
     img: &RgbImage,
     target: u32,
     mean: [f32; 3],
     std: [f32; 3],
+    bgr: bool,
 ) -> (Array4<f32>, ResizeMeta) {
     let target = target.max(1);
     let (ow, oh) = (img.width().max(1), img.height().max(1));
@@ -83,19 +89,17 @@ pub fn to_nchw_normalized(
     let nw = ((ow as f32 * scale).round() as u32).clamp(1, target);
     let nh = ((oh as f32 * scale).round() as u32).clamp(1, target);
     let resized = image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle);
-    let pad_x = ((target - nw) / 2) as f32;
-    let pad_y = ((target - nh) / 2) as f32;
 
     let t = target as usize;
-    let (px, py) = (pad_x as u32, pad_y as u32);
     let tensor = Array4::from_shape_fn((1, 3, t, t), |(_, c, y, x)| {
         let (xi, yi) = (x as u32, y as u32);
-        let inside = xi >= px && xi < px + nw && yi >= py && yi < py + nh;
-        let raw = if inside {
-            resized.get_pixel(xi - px, yi - py)[c] as f32 / 255.0
-        } else {
-            0.0
-        };
+        // Top-left placement: content occupies [0,nw)×[0,nh); the rest is zero pad.
+        if xi >= nw || yi >= nh {
+            return (0.0 - mean[c]) / std[c];
+        }
+        // For a BGR model, channel c reads RGB index (2 - c): channel 0 ← blue.
+        let src = if bgr { 2 - c } else { c };
+        let raw = resized.get_pixel(xi, yi)[src] as f32 / 255.0;
         (raw - mean[c]) / std[c]
     });
 
@@ -103,8 +107,8 @@ pub fn to_nchw_normalized(
         tensor,
         ResizeMeta {
             scale,
-            pad_x,
-            pad_y,
+            pad_x: 0.0,
+            pad_y: 0.0,
             target,
         },
     )
@@ -192,18 +196,28 @@ mod tests {
     }
 
     #[test]
-    fn normalized_tensor_shape_and_padding_metadata() {
-        // 40x20 image into a 100x100 square: scale = 100/40 = 2.5, nw=100, nh=50,
-        // letterbox pad_y = (100-50)/2 = 25, pad_x = 0.
+    fn normalized_tensor_shape_and_top_left_padding() {
+        // 40x20 image into a 100x100 square: scale = 2.5, nw=100, nh=50. SLANet
+        // pads at the top-left, so content occupies rows [0,50) and pad_x=pad_y=0.
         let img = solid(40, 20, [255, 255, 255]);
-        let (t, meta) = to_nchw_normalized(&img, 100, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let (t, meta) = to_nchw_normalized(&img, 100, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], false);
         assert_eq!(t.shape(), &[1, 3, 100, 100]);
         assert!((meta.scale - 2.5).abs() < 1e-6);
         assert_eq!(meta.pad_x, 0.0);
-        assert_eq!(meta.pad_y, 25.0);
-        // White pixel inside the content band normalizes to 1.0; pad area is 0.
-        assert!((t[[0, 0, 30, 10]] - 1.0).abs() < 1e-6); // inside (y=30 in [25,75))
-        assert!(t[[0, 0, 5, 10]].abs() < 1e-6); // pad band (y=5 < 25)
+        assert_eq!(meta.pad_y, 0.0);
+        // White content normalizes to 1.0; the bottom pad band is 0.
+        assert!((t[[0, 0, 10, 10]] - 1.0).abs() < 1e-6); // inside (y=10 < 50)
+        assert!(t[[0, 0, 60, 10]].abs() < 1e-6); // pad band (y=60 >= 50)
+    }
+
+    #[test]
+    fn bgr_flips_channel_order() {
+        // Pure-red RGB pixel. With bgr=true, model channel 0 (blue slot) reads the
+        // image's blue (0.0) and channel 2 reads red (1.0).
+        let img = solid(8, 8, [255, 0, 0]);
+        let (t, _) = to_nchw_normalized(&img, 8, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], true);
+        assert!(t[[0, 0, 0, 0]].abs() < 1e-6); // channel 0 ← blue = 0
+        assert!((t[[0, 2, 0, 0]] - 1.0).abs() < 1e-6); // channel 2 ← red = 1
     }
 
     #[test]
